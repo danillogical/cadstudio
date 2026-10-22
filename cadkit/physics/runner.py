@@ -18,6 +18,7 @@ import math
 import platform
 import random
 import time
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,7 @@ from .scenario import (
     scenario_text_matches,
 )
 from .scene import SceneInvalid, export_scene
+from .schema import safe_filename
 from .state_archive import (
     DEFAULT_MAX_STATE_BYTES,
     REPLAY_TOLERANCES,
@@ -66,6 +68,7 @@ from .telemetry import (
 
 MANIFEST_VERSION = "m4a-1"
 SUMMARY_VERSION = "m4a-1"
+OPTIONS_LOCK = "assembly_options.lock.toml"
 
 
 # --------------------------------------------------------------------------- plan
@@ -231,6 +234,9 @@ def _resolved_inputs(spec) -> dict:
                      "size_mm": list(c.size_mm), "pos_mm": list(c.pos_mm),
                      "rot_deg": list(c.rot_deg), "role": c.role,
                      "contype": c.contype, "conaffinity": c.conaffinity,
+                     "friction": list(c.friction if c.friction is not None
+                                      else spec.friction),
+                     "priority": c.priority,
                      "source": _source(c.source)}
                     for c in part.colliders
                 ],
@@ -356,14 +362,34 @@ def _verify_compiled(mujoco, model, spec, export) -> tuple[dict, list[dict]]:
         raise ScenarioError("compiled solver differs from the declared solver")
     if int(model.opt.iterations) != spec.iterations:
         raise ScenarioError("compiled solver iterations differ from declared")
-    if model.ngeom and not np.allclose(
-            np.asarray(model.geom_friction[0]), np.asarray(spec.friction),
-            rtol=0.0, atol=1e-12):
-        raise ScenarioError("compiled friction differs from the declared friction")
+    # Per-collider check, mapped by geom name; visual mesh geoms (contype=0) are not colliders.
+    collider_geoms: dict[str, dict] = {}
+    for body in spec.bodies:
+        for part in body.parts:
+            for c in part.colliders:
+                gname = safe_filename(c.collider_id)
+                gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, gname)
+                if gid < 0:
+                    raise ScenarioError(f"compiled model has no collider geom {gname!r}")
+                declared = np.asarray(c.friction if c.friction is not None
+                                      else spec.friction, dtype=float)
+                if not np.allclose(model.geom_friction[gid], declared, rtol=0.0, atol=1e-12):
+                    raise ScenarioError(
+                        f"compiled friction for collider {c.collider_id!r} differs from "
+                        f"the declared friction {declared.tolist()!r}")
+                if int(model.geom_priority[gid]) != c.priority:
+                    raise ScenarioError(
+                        f"compiled priority for collider {c.collider_id!r} is "
+                        f"{int(model.geom_priority[gid])!r}, declared {c.priority!r}")
+                collider_geoms[gname] = {
+                    "friction": [float(v) for v in model.geom_friction[gid]],
+                    "priority": int(model.geom_priority[gid]),
+                }
+    facts["collider_geoms"] = collider_geoms
     facts["solver_settings"] = {
         "integrator": int(model.opt.integrator), "cone": int(model.opt.cone),
         "solver": int(model.opt.solver), "iterations": int(model.opt.iterations),
-        "friction": [float(v) for v in model.geom_friction[0]] if model.ngeom else [],
+        "friction": [float(v) for v in spec.friction],
     }
     facts["runtime_identity"] = {
         "mujoco": str(require_mujoco().__version__),
@@ -781,22 +807,48 @@ def run_scenario(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
 def run_assembly(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
                  outdir: Path | None = None, *, scenario_text: str | None = None,
                  acceptance_text: str | None = None,
-                 fixture_label: str | None = None) -> dict:
+                 fixture_label: str | None = None,
+                 options_text: str | None = None,
+                 require_scenario_timestep: bool = False) -> dict:
     """Public typed execution API: run an ``AssemblySpec`` without the fixture registry.
 
     M5 project adapters can build their own assembly and reuse the same generic runner,
     evidence format, budgets and evaluation. JSON scenarios still select only allowlisted
     registry fixtures; this entry point never performs a dynamic import.
+
+    ``options_text`` is the raw TOML of the explicit assembly options the spec was built
+    with. When given it is copied into the run as ``assembly_options.lock.toml`` and its
+    SHA256 joins the run identity; ``None`` leaves the evidence exactly as before.
+    ``require_scenario_timestep`` rejects a scenario whose ``timestep_s`` is absent or
+    differs from the spec's, for project runs where the spec supplies the timestep.
     """
     spec.validate()
+    if require_scenario_timestep:
+        declared = scenario.timestep_s
+        if declared is None:
+            raise ScenarioError(
+                f"scenario {scenario.scenario_id!r} has no timestep_s; project runs require "
+                f"it to equal the assembly timestep {spec.timestep_s!r}")
+        if abs(float(declared) - float(spec.timestep_s)) > 1e-15:
+            raise ScenarioError(
+                f"scenario timestep_s {declared!r} differs from the assembly timestep "
+                f"{spec.timestep_s!r}")
+    options = None
+    if options_text is not None:
+        try:
+            options = tomllib.loads(options_text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ScenarioError(f"assembly options are not valid TOML: {exc}") from exc
     return _run_with_spec(spec, scenario, acceptance, outdir, scenario_text=scenario_text,
                           acceptance_text=acceptance_text,
-                          fixture_label=fixture_label or spec.name)
+                          fixture_label=fixture_label or spec.name,
+                          options_text=options_text, options=options)
 
 
 def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
                    outdir: Path | None, *, scenario_text: str | None,
-                   acceptance_text: str | None, fixture_label: str) -> dict:
+                   acceptance_text: str | None, fixture_label: str,
+                   options_text: str | None = None, options: dict | None = None) -> dict:
     resolve_references(scenario, acceptance, spec)
     plan = preflight(scenario, spec)
     _require_supported_integrator(spec)
@@ -813,6 +865,8 @@ def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
     try:
         (run_dir / "scenario.json").write_bytes(scenario_text.encode("utf-8"))
         (run_dir / "acceptance.lock.json").write_bytes(acceptance_text.encode("utf-8"))
+        if options_text is not None:
+            (run_dir / OPTIONS_LOCK).write_bytes(options_text.encode("utf-8"))
         scene_export = export_scene(spec, run_dir)
         stage = "compile"
         mujoco = require_mujoco()
@@ -873,6 +927,7 @@ def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
         summary = _build_summary(
             scenario, acceptance, spec, plan, compiled, telemetry, evaluation, run_dir,
             run_id, started, scenario_text, acceptance_text, fixture_label,
+            options_text=options_text, options=options,
         )
         _write_artifacts(run_dir, telemetry, summary)
         return summary
@@ -886,7 +941,8 @@ def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
 
 def _build_summary(scenario, acceptance, spec, plan, compiled, telemetry, evaluation,
                    run_dir, run_id, started, scenario_text, acceptance_text,
-                   fixture_label) -> dict:
+                   fixture_label, *, options_text: str | None = None,
+                   options: dict | None = None) -> dict:
     metrics = evaluation.metrics
     phases = [p.to_dict() for p in telemetry.phases]
     for planned in plan.phases:
@@ -937,6 +993,10 @@ def _build_summary(scenario, acceptance, spec, plan, compiled, telemetry, evalua
         "state_meta": "state_meta.json",
         "checkpoints": "checkpoints.npz",
     }
+    options_sha = (hashlib.sha256(options_text.encode("utf-8")).hexdigest()
+                   if options_text is not None else None)
+    if options_sha:
+        artifacts["assembly_options_lock"] = OPTIONS_LOCK
     summary = {
         "schema_version": SUMMARY_VERSION,
         "status": evaluation.status,
@@ -996,12 +1056,16 @@ def _build_summary(scenario, acceptance, spec, plan, compiled, telemetry, evalua
             "timestep_s": spec.timestep_s,
             "mujoco": str(require_mujoco().__version__),
             "platform": platform.platform(),
+            **({"assembly_options_sha256": options_sha} if options_sha else {}),
         }),
         "physical_inputs": _resolved_inputs(spec),
         "artifacts": artifacts,
         "runtime_wall_s": time.perf_counter() - started,
         "detail": "",
     }
+    if options_sha:
+        summary["assembly_options"] = options or {}
+        summary["assembly_options_sha256"] = options_sha
     return summary
 
 
@@ -1074,6 +1138,9 @@ def _write_artifacts(run_dir: Path, telemetry, summary: dict) -> None:
         "status": summary["status"],
         "artifacts": _artifact_manifest(run_dir),
     }
+    if "assembly_options_sha256" in summary:
+        manifest["assembly_options"] = summary["assembly_options"]
+        manifest["assembly_options_sha256"] = summary["assembly_options_sha256"]
     _write_json(run_dir / "manifest.json", manifest)
 
 

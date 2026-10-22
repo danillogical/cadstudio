@@ -329,10 +329,16 @@ def _collider_xml(collider: ColliderSpec) -> str:
     # convention cannot reinterpret it, and so a rotated collider cannot drift from the
     # build123d rotation it was copied from.
     rot = _quat_from_rot_deg(collider.rot_deg)
+    # Optional attributes are emitted only when set, so existing specs keep identical XML.
+    extra = ""
+    if collider.friction is not None:
+        extra += f' friction="{_vec(collider.friction)}"'
+    if collider.priority != 0:
+        extra += f' priority="{collider.priority}"'
     return (
         f'<geom name="{safe_filename(collider.collider_id)}" type="{geom_type}" '
         f'size="{size}" pos="{pos}" quat="{rot}" '
-        f'contype="{collider.contype}" conaffinity="{collider.conaffinity}" '
+        f'contype="{collider.contype}" conaffinity="{collider.conaffinity}"{extra} '
         f'condim="3" material="mat_structure"/>'
     )
 

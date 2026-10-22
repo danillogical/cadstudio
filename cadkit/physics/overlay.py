@@ -13,6 +13,7 @@ results in ``collision.py`` are the actual gate.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -93,9 +94,33 @@ def collider_mesh(collider: ColliderSpec):
     )
 
 
-def render_overlay(body: BodySpec, path: Path, *, transits=(), title: str = "") -> Path:
-    """Write a PNG showing the CAD surface with the declared colliders over it."""
+#: Named views mapped to PyVista camera positions; ``iso`` keeps the legacy azimuth/elevation.
+VIEW_CAMERAS = {"iso": "iso", "top": "xy", "front": "xz", "side": "yz"}
+
+
+def render_overlay(body: BodySpec, path: Path, *, transits=(), title: str = "",
+                   camera: str | tuple | None = None,
+                   view: Literal["iso", "top", "front", "side"] | None = None,
+                   clip: tuple[tuple, tuple] | None = None) -> Path:
+    """Write a PNG showing the CAD surface with the declared colliders over it.
+
+    ``camera`` is any PyVista camera position and ``view`` a named one; both ``None`` keeps the
+    legacy iso view. ``clip`` is ``(normal_xyz, origin_xyz)`` in metres and removes the CAD and
+    collider geometry on the positive-normal side of that plane, for cutaway evidence.
+    """
     import pyvista as pv
+
+    if camera is not None and view is not None:
+        raise ValueError("pass either camera or view, not both")
+    if view is not None and view not in VIEW_CAMERAS:
+        raise ValueError(f"unknown view {view!r}; expected one of {sorted(VIEW_CAMERAS)}")
+
+    def cut(pv_mesh):
+        if clip is None:
+            return pv_mesh
+        normal, origin = clip
+        # PyVista's default invert keeps the negative-normal side of the plane.
+        return pv_mesh.clip(normal=tuple(normal), origin=tuple(origin))
 
     from ..mesh import shape_to_mesh
     from ..render import to_pv
@@ -111,12 +136,18 @@ def render_overlay(body: BodySpec, path: Path, *, transits=(), title: str = "") 
         # The CAD mesher works in millimetres; colliders and the transit path are in metres.
         # Scale here so one picture cannot compare two different unit systems.
         mesh.apply_scale(1e-3)
-        pl.add_mesh(to_pv(mesh), color=VISUAL_COLOR, opacity=0.22, smooth_shading=False,
+        shown = cut(to_pv(mesh))
+        if shown.n_points == 0:
+            continue
+        pl.add_mesh(shown, color=VISUAL_COLOR, opacity=0.22, smooth_shading=False,
                     label=f"CAD {part.part_id}")
 
     for i, collider in enumerate(c for part in body.parts for c in part.colliders):
         mesh = collider_mesh(collider)
-        pl.add_mesh(to_pv(mesh), color=COLLIDER_COLORS[i % len(COLLIDER_COLORS)],
+        shown = cut(to_pv(mesh))
+        if shown.n_points == 0:
+            continue
+        pl.add_mesh(shown, color=COLLIDER_COLORS[i % len(COLLIDER_COLORS)],
                     opacity=0.55, label=collider.collider_id)
 
     for transit in transits:
@@ -134,9 +165,14 @@ def render_overlay(body: BodySpec, path: Path, *, transits=(), title: str = "") 
         pl.add_text(title, position="upper_left", color="#222222")
     # Projection must be set before the camera, otherwise PyVista can reset the view.
     pl.enable_parallel_projection()
-    pl.camera_position = "iso"
-    pl.camera.azimuth = 35
-    pl.camera.elevation = 22
+    if camera is not None:
+        pl.camera_position = camera
+    elif view is not None and view != "iso":
+        pl.camera_position = VIEW_CAMERAS[view]
+    else:
+        pl.camera_position = "iso"
+        pl.camera.azimuth = 35
+        pl.camera.elevation = 22
     pl.render()
 
     path = Path(path)

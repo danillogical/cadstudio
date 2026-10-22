@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -51,6 +52,9 @@ class Project:
         project has no physics description. Default: no physics. It takes the **model name**
         as well as the params so one project's distinct models are never all assigned one
         assembly by accident. Called only by ``cad physics``; never imported otherwise.
+    physics_with_options: ``physics_with_options(model_name, p, options) -> AssemblySpec`` where
+        ``options`` is the parsed top-level table of ``cad physics run --options`` (``{}`` when no
+        file is given). Default: none. Called only by ``cad physics run``.
     """
     name: str
     params_path: Path
@@ -60,6 +64,7 @@ class Project:
     ghost_meshes: Callable[[Any], list[tuple[trimesh.Trimesh, str, float]]] = _no_ghosts
     extra_views: Callable[[dict[str, trimesh.Trimesh], Any, Path, set[str]], dict[str, Path]] = _no_views
     physics: Callable[[str, Any], Any] | None = None
+    physics_with_options: Callable[[str, Any, Mapping[str, Any]], Any] | None = None
 
 
 def discover() -> dict[str, Project]:

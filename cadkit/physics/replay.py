@@ -16,6 +16,7 @@ import json
 import math
 import platform
 import time
+import tomllib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +60,7 @@ from .state_archive import (
 from .telemetry import PhaseTelemetry, TelemetryRecorder
 
 REPLAY_FORMAT = "m4b-1"
+OPTIONS_LOCK = "assembly_options.lock.toml"
 MAX_REPLAY_STEPS = MAX_ARCHIVE_ROWS
 _CHECKPOINT_MEMBERS = {
     "initial", "initial_row", "post_settle", "post_settle_row", "terminal", "terminal_row",
@@ -218,7 +220,7 @@ def load_verified_run(run_dir: Path, *, max_rows: int = MAX_ARCHIVE_ROWS,
                 "summary and manifest runtime identities differ")
         require(summary.get("events", []) == manifest.get("events", []),
                 "summary and manifest event evidence differ")
-        recomputed_identity = content_hash({
+        identity_inputs = {
             "scene_hash": summary["scene"]["scene_hash"],
             "scenario_hash": summary["scenario"]["hash"],
             "acceptance_hash": summary["acceptance"]["hash"],
@@ -226,7 +228,28 @@ def load_verified_run(run_dir: Path, *, max_rows: int = MAX_ARCHIVE_ROWS,
             "timestep_s": summary["timestep_s"],
             "mujoco": str(require_mujoco().__version__),
             "platform": platform.platform(),
-        })
+        }
+        options_sha = summary.get("assembly_options_sha256")
+        lock = raw_files.get(OPTIONS_LOCK)
+        if options_sha is None:
+            require(lock is None and "assembly_options" not in summary
+                    and "assembly_options_sha256" not in manifest,
+                    "run has an assembly options lock the summary does not record")
+        else:
+            require(lock is not None, f"{OPTIONS_LOCK} is missing from the run")
+            require(raw_sha256(lock) == options_sha,
+                    f"{OPTIONS_LOCK} raw sha256 does not match the summary")
+            require(manifest.get("assembly_options_sha256") == options_sha
+                    and manifest.get("assembly_options") == summary.get("assembly_options"),
+                    "manifest and summary assembly options differ")
+            try:
+                parsed = tomllib.loads(lock.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+                raise ReplayError(f"{OPTIONS_LOCK} is not valid TOML: {exc}") from exc
+            require(parsed == summary.get("assembly_options"),
+                    f"{OPTIONS_LOCK} content differs from the summary's assembly options")
+            identity_inputs["assembly_options_sha256"] = options_sha
+        recomputed_identity = content_hash(identity_inputs)
         require(recomputed_identity == summary.get("identity") == manifest.get("identity"),
                 "run identity hash does not recompute from the summary")
 
@@ -496,9 +519,21 @@ def _verify_compiled_against_record(mujoco, model, summary: dict) -> None:
     require(int(model.opt.solver) == int(settings["solver"]), "compiled solver differs")
     require(int(model.opt.iterations) == int(settings["iterations"]),
             "compiled iterations differ")
-    if model.ngeom:
-        require(np.allclose(model.geom_friction[0], settings["friction"],
-                            rtol=0.0, atol=1e-12), "compiled friction differs")
+    recorded_geoms = summary["solver"].get("collider_geoms")
+    if recorded_geoms is None:
+        # Summaries recorded before per-collider friction carry only the shared default.
+        if model.ngeom:
+            require(np.allclose(model.geom_friction[0], settings["friction"],
+                                rtol=0.0, atol=1e-12), "compiled friction differs")
+    else:
+        for name, recorded in recorded_geoms.items():
+            gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            require(gid >= 0, f"compiled model is missing collider geom {name!r}")
+            require(np.allclose(model.geom_friction[gid], recorded["friction"],
+                                rtol=0.0, atol=1e-12),
+                    f"compiled friction for collider geom {name!r} differs")
+            require(int(model.geom_priority[gid]) == int(recorded["priority"]),
+                    f"compiled priority for collider geom {name!r} differs")
     for name, recorded in summary["solver"]["bodies"].items():
         bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
         require(bid >= 0, f"compiled model is missing body {name!r}")

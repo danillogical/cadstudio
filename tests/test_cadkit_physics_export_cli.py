@@ -23,9 +23,15 @@ def cad(*args, timeout=240):
 
 
 def test_project_physics_defaults_to_none():
-    """No project opts into physics yet, and the default must not be a shared assembly."""
-    for name, project in discover().items():
-        assert project.physics is None, name
+    """The dataclass defaults are None, and the armor project opts into neither hook."""
+    import dataclasses
+
+    fields = {f.name: f for f in dataclasses.fields(Project)}
+    assert fields["physics"].default is None
+    assert fields["physics_with_options"].default is None
+    armor = discover()["armor"]
+    assert armor.physics is None
+    assert armor.physics_with_options is None
 
 
 def test_project_physics_field_takes_model_and_params():

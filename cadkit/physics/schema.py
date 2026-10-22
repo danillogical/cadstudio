@@ -106,6 +106,10 @@ class ColliderSpec:
     conaffinity: int = 1
     vertices_mm: tuple[tuple[float, float, float], ...] | None = None  # reserved for convex
     source: Source = Source("derived", "declared primitive")
+    # Sliding, torsional, rolling friction; None inherits the assembly default.
+    friction: tuple[float, float, float] | None = None
+    # MuJoCo geom priority: the higher-priority geom's contact parameters win in a pair.
+    priority: int = 0
 
     def validate(self) -> None:
         _validate_id(self.collider_id, "collider_id")
@@ -135,6 +139,14 @@ class ColliderSpec:
         for bits in (self.contype, self.conaffinity):
             if not 0 <= bits <= 0xFFFF:
                 raise ValueError(f"collider {self.collider_id!r} has an out-of-range bitmask")
+        if self.friction is not None and (len(self.friction) != 3 or not all(
+                math.isfinite(f) and f >= 0.0 for f in self.friction)):
+            raise ValueError(f"collider {self.collider_id!r} friction must be 3 finite "
+                             f"non-negative values, got {self.friction!r}")
+        if (not isinstance(self.priority, int) or isinstance(self.priority, bool)
+                or self.priority < 0):
+            raise ValueError(f"collider {self.collider_id!r} priority must be a "
+                             f"non-negative int, got {self.priority!r}")
 
 
 @dataclass(frozen=True)

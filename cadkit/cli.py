@@ -171,6 +171,9 @@ def cmd_physics(args) -> int:
     if args.verb == "replay":
         return _physics_replay(args)
 
+    if args.verb == "run":
+        return _physics_run(args)
+
     print(f"physics: unknown verb {args.verb!r}", file=sys.stderr)
     print(json_status("ERROR", "cli", f"unknown physics verb {args.verb!r}"))
     return EXIT_CODES["ERROR"]
@@ -402,6 +405,122 @@ def _physics_scenario(args) -> int:
     return EXIT_CODES[status]
 
 
+MAX_OPTIONS_BYTES = 64 * 1024
+EMPTY_OPTIONS_LOCK = "# assembly options: none\n"
+
+
+def _read_options(path: str) -> tuple[str, dict]:
+    """Strict bounded options TOML: a top-level table of scalars and flat scalar arrays."""
+    import tomllib
+
+    with open(path, "rb") as fh:
+        raw = fh.read(MAX_OPTIONS_BYTES + 1)
+    if len(raw) > MAX_OPTIONS_BYTES:
+        raise ValueError(f"options file {path} exceeds {MAX_OPTIONS_BYTES} bytes")
+    try:
+        text = raw.decode("utf-8")
+        parsed = tomllib.loads(text)
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"options file {path} is not valid TOML: {exc}") from exc
+
+    def scalar(v) -> bool:
+        return isinstance(v, (bool, int, float, str))
+
+    for key, value in parsed.items():
+        if scalar(value):
+            continue
+        if isinstance(value, list) and all(scalar(v) for v in value):
+            continue
+        raise ValueError(f"options key {key!r} must be a scalar or an array of scalars")
+    return text, parsed
+
+
+def _fresh_run_dir(project, model, scenario_id: str):
+    from datetime import datetime, timezone
+
+    parent = _physics_outdir(project, model).parent / scenario_id
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return parent / stamp
+
+
+def _physics_run(args) -> int:
+    """``cad physics run <project>/<model>``: run a project assembly through the generic runner."""
+    from pathlib import Path
+
+    from .physics import EXIT_CODES, PhysicsUnavailable
+    from .physics.runner import run_assembly
+    from .physics.scenario import ScenarioError, load_acceptance, load_scenario
+    from .physics.scene import SceneInvalid
+
+    label = getattr(args, "model", None) or "run"
+
+    def fail(detail: str) -> int:
+        print(f"physics run: {detail}", file=sys.stderr)
+        print(json_status("ERROR", label, detail))
+        return EXIT_CODES["ERROR"]
+
+    try:
+        project, model = _resolve(args)
+        p = _load(args, project)
+        scenario = load_scenario(Path(args.scenario))
+        acceptance = load_acceptance(Path(args.acceptance))
+        label = scenario.scenario_id
+        if args.options:
+            options_text, options = _read_options(args.options)
+            hook = getattr(project, "physics_with_options", None)
+            if hook is None:
+                return fail(f"project {project.name!r} has no physics_with_options hook but "
+                            f"--options was given")
+            spec = hook(model, p, options)
+        else:
+            options_text, options = EMPTY_OPTIONS_LOCK, {}
+            hook = getattr(project, "physics_with_options", None)
+            if hook is not None:
+                spec = hook(model, p, options)
+            else:
+                hook = getattr(project, "physics", None)
+                if hook is None:
+                    return fail(f"project {project.name!r} has no physics assembly; declare "
+                                f"Project.physics(model_name, params)")
+                spec = hook(model, p)
+        if spec is None:
+            return fail(f"model {project.name}/{model} has no physics assembly; the project's "
+                        f"physics hook returned None for this model")
+        outdir = Path(args.out) if args.out else _fresh_run_dir(project, model, scenario.scenario_id)
+        summary = run_assembly(spec, scenario, acceptance, outdir,
+                               scenario_text=scenario.source_text,
+                               acceptance_text=acceptance.source_text,
+                               fixture_label=f"{project.name}/{model}",
+                               options_text=options_text, require_scenario_timestep=True)
+    except SystemExit:
+        return fail("unknown project or model")
+    except (ScenarioError, SceneInvalid, PhysicsUnavailable, OSError, ValueError,
+            ArithmeticError, RecursionError, TypeError, KeyError, StopIteration,
+            IndexError) as exc:
+        return fail(str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc))
+
+    status = summary["status"]
+    if status == "ERROR":
+        print(f"physics run: {summary.get('detail', 'run failed')}", file=sys.stderr)
+    detail = summary.get("detail") or (
+        f"{summary.get('fixture', '?')}, seed {summary.get('seed', '?')}, "
+        f"{len(summary.get('checks', []))} checks")
+    print(json_status(status, label, detail))
+    for check in summary.get("checks", []):
+        print(f"check {check['name']}: {check['status']} - {check['detail']}")
+    for event in summary.get("events", []):
+        print(f"event {event['name']}: {event['status']} {event['verdict_code']} - "
+              f"{event['detail']}")
+    for reason in summary.get("validity", {}).get("reasons", []):
+        print(f"invalid [{reason['stage']}]: {reason['reason']}")
+    if "assembly_options_sha256" in summary:
+        print(f"assembly options sha256: {summary['assembly_options_sha256']}")
+    outdir = Path(summary["run_dir"])
+    for name, rel in summary.get("artifacts", {}).items():
+        print(f"wrote {name}: {outdir / rel}")
+    return EXIT_CODES[status]
+
+
 def _physics_replay(args) -> int:
     """``cad physics replay <run-dir> --out <fresh-dir>``: verify and replay saved evidence."""
     from pathlib import Path
@@ -525,6 +644,18 @@ def main(argv: list[str] | None = None) -> int:
     scenario.add_argument("--out", help="run directory (default out/fixtures/m4a/..."
                                         "<scenario>/physics/<run-id>)")
     scenario.set_defaults(fn=cmd_physics)
+
+    run = phys_sub.add_parser(
+        "run", help="run a project model's physics assembly against a scenario and acceptance")
+    run.add_argument("model", help="<project>/<model>")
+    run.add_argument("--scenario", required=True, help="scenario JSON path")
+    run.add_argument("--acceptance", required=True, help="frozen acceptance JSON path")
+    run.add_argument("--options", help="strict TOML assembly options (scalars/arrays, <=64 KiB)")
+    run.add_argument("--params", help="params TOML (default: the project's)")
+    run.add_argument("--set", action="append", metavar="KEY=VAL", help="override a parameter")
+    run.add_argument("--out", help="run directory, must not exist (default "
+                                   "out/<project>/<model>/physics/<scenario_id>/<run-id>)")
+    run.set_defaults(fn=cmd_physics)
 
     replay = phys_sub.add_parser(
         "replay", help="verify and deterministically replay a saved M4a run directory")
