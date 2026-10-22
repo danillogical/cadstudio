@@ -1,0 +1,43 @@
+[project]
+name = "cadstudio"
+version = "0.1.0"
+description = "Iterative build123d CAD tooling for a Chromebook lid armor shell"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "build123d",
+    "trimesh",
+    "manifold3d",
+    "numpy",
+    "pyvista",
+    "matplotlib",
+    "rtree",
+    "networkx",
+    "shapely>=2.2.0",
+]
+
+[project.optional-dependencies]
+# Optional rigid-body physics. Never imported by list/build/render/check.
+# macOS arm64 wheel exists for 3.16.0; there is no macOS x86_64 wheel.
+physics = ["mujoco==3.16.0"]
+
+[project.scripts]
+cad = "cadkit.cli:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Standard PyPI. The previous default (https://pypi.apple.com/simple) did not resolve
+# from this machine, which made `uv run` fail while building the project (hatchling).
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["cadkit", "projects"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,11 @@
+.venv/
+out/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+MUJOCO_LOG.TXT
+.omp-bridge/
+.env
+.env.*
+!.env.example

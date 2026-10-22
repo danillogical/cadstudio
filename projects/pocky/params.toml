@@ -1,0 +1,29 @@
+# Single source of truth for the Pocky dispenser (all mm unless noted).
+# Defaults come from plan-pockey-dispenser.md section 4; MEASURE the starred ones on real packets.
+
+[packet]
+length = 165.0  # MEASURE: outside length over several wrapped packets (user nominal)
+width = 55.0    # MEASURE: outside width over several wrapped packets (user nominal)
+height = 5.2    # user-measured thickness; record the method, do not assume it holds under stack load
+
+[magazine]
+length_i = 170.0    # internal length, ~2.5 mm clearance per end; adjust for crinkled seals
+width_i = 60.0      # internal width, ~2.5 mm clearance per side
+headroom = 20.0     # loading room above the stack (plan range 15-25); tune by printing
+capacity_test = 10  # packets in the current test; 25 is the second test (same mechanism must work)
+
+[separator]
+gap = 5.75  # trial value from the 5.5-6.0 range; must pass one packet but reject two compressed ones; adjustable by shims
+
+[structure]
+min_wall = 2.4  # minimum printable wall thickness (checked by min_wall)
+
+[printer]
+bed_x = 360  # Prusa XL usable bed X
+bed_y = 360  # Prusa XL usable bed Y
+bed_z = 360  # Prusa XL max print height
+
+[material]
+name = "PETG"
+density_g_cm3 = 1.27  # filament datasheet density
+filament_d = 1.75     # filament diameter, mm

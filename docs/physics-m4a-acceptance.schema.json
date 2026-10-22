@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadkit/physics/acceptance-m4a-1.schema.json",
+  "title": "cadkit M4a/M4c frozen acceptance criteria",
+  "description": "Literal thresholds loaded separately from the candidate scenario and copied into the run lock. Predicates may not be derived from candidate geometry or outcomes. Named events add typed identity/direction/window and supported-presentation criteria.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "acceptance_id", "checks"],
+  "properties": {
+    "schema_version": {"const": "m4a-1"},
+    "acceptance_id": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+    "notes": {"type": "string"},
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_penetration_m": {"type": "number", "minimum": 0},
+        "max_speed_m_s": {"type": "number", "minimum": 0},
+        "max_angular_speed_rad_s": {"type": "number", "minimum": 0},
+        "max_energy_j": {"type": "number", "minimum": 0}
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/exit_crossing"},
+          {"$ref": "#/$defs/supported_presentation"}
+        ]
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "joint", "to_phase", "expected", "tolerance", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "joint_displacement"},
+              "joint": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "from_phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "to_phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "expected": {"type": "number"},
+              "tolerance": {"type": "number", "minimum": 0},
+              "units": {"enum": ["m", "rad"]}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "joint", "phase", "reference", "max", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "return_displacement"},
+              "joint": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "reference": {"type": "number"},
+              "max": {"type": "number", "minimum": 0},
+              "units": {"enum": ["m", "rad"]}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "joint", "phase", "max", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "terminal_speed"},
+              "joint": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "max": {"type": "number", "minimum": 0},
+              "units": {"enum": ["m/s", "rad/s"]}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "body", "phase", "max", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "body_speed"},
+              "body": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "max": {"type": "number", "minimum": 0},
+              "units": {"const": "m/s"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "actuator", "max", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "effort_bound"},
+              "actuator": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "max": {"type": "number", "exclusiveMinimum": 0},
+              "units": {"enum": ["N", "N m", "Nm", "N.m"]}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "body_a", "body_b", "max", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "contact_force_bound"},
+              "body_a": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "body_b": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "max": {"type": "number", "exclusiveMinimum": 0},
+              "units": {"const": "N"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "max", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "penetration_bound"},
+              "max": {"type": "number", "exclusiveMinimum": 0},
+              "units": {"const": "m"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "event", "expected", "tolerance", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "event_count"},
+              "event": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "expected": {"type": "integer", "minimum": 0},
+              "tolerance": {"type": "integer", "minimum": 0},
+              "units": {"const": "count"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "event", "units"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "event_verdict"},
+              "event": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "units": {"const": "state"}
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "safe_id": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+    "plane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["point_m", "normal"],
+      "properties": {
+        "point_m": {"type": "array", "minItems": 3, "maxItems": 3,
+                    "items": {"type": "number"}},
+        "normal": {"type": "array", "minItems": 3, "maxItems": 3,
+                   "items": {"type": "number"}},
+        "direction": {"enum": [-1, 1]}
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "z"],
+      "properties": {
+        "x": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+        "y": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+        "z": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}
+      }
+    },
+    "half_extents": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "items": {"type": "number", "exclusiveMinimum": 0}
+    },
+    "exit_crossing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "bodies", "plane", "object_half_extents_m",
+                   "window_from", "window_to"],
+      "properties": {
+        "name": {"$ref": "#/$defs/safe_id"},
+        "kind": {"const": "exit_crossing"},
+        "bodies": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/safe_id"}},
+        "plane": {"$ref": "#/$defs/plane"},
+        "object_half_extents_m": {"$ref": "#/$defs/half_extents"},
+        "window_from": {"$ref": "#/$defs/safe_id"},
+        "window_to": {"$ref": "#/$defs/safe_id"}
+      }
+    },
+    "supported_presentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "bodies", "plane", "access_plane",
+                   "object_half_extents_m", "window_from", "window_to",
+                   "release_phase", "dwell_from", "dwell_to",
+                   "min_protrusion_m", "min_accessible_m", "dwell_min_s",
+                   "protrusion_change_max_m", "support_bodies",
+                   "max_terminal_speed_m_s", "bounds_m", "fallout_drop_m"],
+      "properties": {
+        "name": {"$ref": "#/$defs/safe_id"},
+        "kind": {"const": "supported_presentation"},
+        "bodies": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/safe_id"}},
+        "plane": {"$ref": "#/$defs/plane"},
+        "access_plane": {"$ref": "#/$defs/plane"},
+        "object_half_extents_m": {"$ref": "#/$defs/half_extents"},
+        "window_from": {"$ref": "#/$defs/safe_id"},
+        "window_to": {"$ref": "#/$defs/safe_id"},
+        "release_phase": {"$ref": "#/$defs/safe_id"},
+        "dwell_from": {"$ref": "#/$defs/safe_id"},
+        "dwell_to": {"$ref": "#/$defs/safe_id"},
+        "min_protrusion_m": {"type": "number", "exclusiveMinimum": 0},
+        "target_protrusion_m": {"type": "number", "exclusiveMinimum": 0},
+        "min_accessible_m": {"type": "number", "minimum": 0},
+        "dwell_min_s": {"type": "number", "exclusiveMinimum": 0},
+        "protrusion_change_max_m": {"type": "number", "minimum": 0},
+        "support_bodies": {"type": "array", "minItems": 1,
+                           "items": {"$ref": "#/$defs/safe_id"}},
+        "min_support_load_fraction": {"type": "number", "exclusiveMinimum": 0,
+                                      "maximum": 1},
+        "support_hull_margin_m": {"type": "number", "minimum": 0},
+        "support_hull_min_area_m2": {"type": "number", "exclusiveMinimum": 0},
+        "support_degeneracy_radius_m": {"type": "number", "minimum": 0},
+        "max_terminal_speed_m_s": {"type": "number", "exclusiveMinimum": 0},
+        "bounds_m": {"$ref": "#/$defs/bounds"},
+        "fallout_drop_m": {"type": "number", "exclusiveMinimum": 0}
+      }
+    }
+  }
+}

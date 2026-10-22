@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadkit/physics/scenario-m4a-1.schema.json",
+  "title": "cadkit M4a generic physics scenario",
+  "description": "Strict declarative scenario. All values are SI where the field name says so; fixture geometry is selected from a fixed registry, never from a path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scenario_id", "fixture", "budgets", "phases"],
+  "properties": {
+    "schema_version": {"const": "m4a-1"},
+    "scenario_id": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+    "fixture": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$", "description": "Registry fixture id for JSON execution; typed run_assembly callers may use their own label."},
+    "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+    "timestep_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.01},
+    "sampling_interval_s": {"type": "number", "exclusiveMinimum": 0},
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_steps", "max_sim_time_s", "max_trace_rows"],
+      "properties": {
+        "max_steps": {"type": "integer", "minimum": 1},
+        "max_sim_time_s": {"type": "number", "exclusiveMinimum": 0},
+        "max_trace_rows": {"type": "integer", "minimum": 1},
+        "max_state_rows": {"type": "integer", "minimum": 1},
+        "max_state_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "phases": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "reset"},
+              "initial": {
+                "type": "object",
+                "additionalProperties": {"type": "number"}
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "duration_s"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"enum": ["settle", "actuate", "release", "hold"]},
+              "duration_s": {"type": "number", "exclusiveMinimum": 0},
+              "actuator": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "effort": {"type": "number"}
+            },
+            "if": {"properties": {"kind": {"const": "actuate"}}},
+            "then": {"required": ["actuator", "effort"]},
+            "else": {"not": {"anyOf": [{"required": ["actuator"]}, {"required": ["effort"]}]}}
+          }
+        ]
+      }
+    }
+  }
+}

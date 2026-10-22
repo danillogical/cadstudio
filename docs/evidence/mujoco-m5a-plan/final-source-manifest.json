@@ -1,0 +1,778 @@
+{
+  "created_utc": "2026-10-22T04:08:09Z",
+  "exclusions": [
+    "out/** (volatile run artifacts)",
+    ".venv/**",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    ".pytest_cache/**",
+    "**/.DS_Store",
+    ".omp-bridge/** (external supervision state)",
+    "authorized planning evidence"
+  ],
+  "file_count": 185,
+  "files": {
+    ".gitignore": {
+      "bytes": 31,
+      "sha256": "2b1a2366f0f9b5b629ee297837802c81c298f2913a7f085fa2cd920c85582983"
+    },
+    ".python-version": {
+      "bytes": 5,
+      "sha256": "7b55f8e67b5623c4bef3fa691288da9437d79d3aba156de48d481db32ac7d16d"
+    },
+    "CLAUDE.md": {
+      "bytes": 12444,
+      "sha256": "792e7a00445282ecd4bd31a166d5d13fd11b2c254f9019f571d570478a1af69c"
+    },
+    "MEASURING.md": {
+      "bytes": 10321,
+      "sha256": "68008e453f7b1bd1c1b299f586527409aa0fd9f36e0361a14344092b73aa76ff"
+    },
+    "MUJOCO_LOG.TXT": {
+      "bytes": 1195,
+      "sha256": "dbb4ecef45b0f0aea3b0204fa97f1e67abda529e05664c1a5c6edc64f9d7f8d7"
+    },
+    "README.md": {
+      "bytes": 7645,
+      "sha256": "b5e413638dae42f50806f8384f2ce435fab3aede6e021a0e48e4fb0644ba1e4a"
+    },
+    "cadkit/__init__.py": {
+      "bytes": 57,
+      "sha256": "04e5378575365a7eb777aeccf30a6471bbc23bbd950723bc13fc83d0439bf7f1"
+    },
+    "cadkit/checks.py": {
+      "bytes": 8218,
+      "sha256": "e7dbff75ba78752686ad2c15480f60c30d5660b48eedeca7fdebe4cd7fbb0b2d"
+    },
+    "cadkit/cli.py": {
+      "bytes": 24506,
+      "sha256": "a26957555e46d10901a9f3b88b26ef7fe417bb95ba6cc0f8ecf4228441e4cfcb"
+    },
+    "cadkit/export.py": {
+      "bytes": 1141,
+      "sha256": "5e038e55a2e69f4117b786c94163cd65e56710b6a7744775add8268cabeb09a8"
+    },
+    "cadkit/mesh.py": {
+      "bytes": 814,
+      "sha256": "fd8edcc74259435c3023fefcb2d5eee6e95e18f859f75a2bdf6e7cf5d13a81ad"
+    },
+    "cadkit/model.py": {
+      "bytes": 837,
+      "sha256": "b7c7a47068ef8b7ae60185d2c09de9dd140703c5146dce453debd56ee68262c7"
+    },
+    "cadkit/params.py": {
+      "bytes": 2925,
+      "sha256": "8cca9fcdc4b6a0176864cce16867fa3aa203729de4ef2e834f930584f9f5739d"
+    },
+    "cadkit/physics/__init__.py": {
+      "bytes": 2818,
+      "sha256": "54d94fd619cb317ca4513aeb84cf4d915446ae6273ba12909091a6c406600b57"
+    },
+    "cadkit/physics/collision.py": {
+      "bytes": 16820,
+      "sha256": "1197a15b1ec94ca11cb464a23ea5c7e49e2164eeb1b6844b96d91eb4ce8cd914"
+    },
+    "cadkit/physics/evaluate.py": {
+      "bytes": 23067,
+      "sha256": "624a367f46efad740ddbbb6a1311cd2f1b022a01cb21bb69e9bafaa9d7605181"
+    },
+    "cadkit/physics/events.py": {
+      "bytes": 51262,
+      "sha256": "b126167ae9286160f225417a7aec1f1ad0bfcaae630de6236be082e5d65c3817"
+    },
+    "cadkit/physics/evidence.py": {
+      "bytes": 6281,
+      "sha256": "e5302520cd2b93cf2257700990f8d6245301875be29eb62942202f364109811a"
+    },
+    "cadkit/physics/fixtures.py": {
+      "bytes": 4166,
+      "sha256": "d30a6d7afc1c314c805eae8c675469553c9793dbf14f85d3909c70177d70ca30"
+    },
+    "cadkit/physics/gravity_drop.py": {
+      "bytes": 10905,
+      "sha256": "c479b1a11818a91466316f3ca1302a385e1128f01a0784b818b1da5b2e0a93da"
+    },
+    "cadkit/physics/hollow.py": {
+      "bytes": 14726,
+      "sha256": "911ebe9c451444b59a8d73e5caf79360597b0e003c96ea224acfb5b599d0cc37"
+    },
+    "cadkit/physics/hollow_run.py": {
+      "bytes": 23040,
+      "sha256": "0215d1d3630cc4dee186dcda226e21eaf4a09ccf749cbd2d4ce2698eb863314a"
+    },
+    "cadkit/physics/inertia.py": {
+      "bytes": 6097,
+      "sha256": "edb794888b5e942dc6c83f751bb1e87af6990c9d0793b86d64493fc865b1ef54"
+    },
+    "cadkit/physics/mechanics.py": {
+      "bytes": 19712,
+      "sha256": "f5beefe449053915f6d5c2b721837987aac5d89f91b6c3c5ac2182d40cabe102"
+    },
+    "cadkit/physics/mechanics_run.py": {
+      "bytes": 60185,
+      "sha256": "00d2b6c5fd5f69f276ef3eb222f4555b0fa1a72160904bdecb698b6f6f27aed8"
+    },
+    "cadkit/physics/overlay.py": {
+      "bytes": 5751,
+      "sha256": "bc75fae08fc415fcc6eacb1c4918c65d5ca49a8dfd268a5dc9f9ce8a9ca9a31a"
+    },
+    "cadkit/physics/presentation_aperture.py": {
+      "bytes": 10572,
+      "sha256": "ebc7bc255c39e7df50eac952091b4b31349575258f646d9b6e93e11420b3fd78"
+    },
+    "cadkit/physics/replay.py": {
+      "bytes": 56110,
+      "sha256": "39cb555b223416b4fd3c5e63c49f196d5e229d8f8b49a89119232bb64d5e6f6a"
+    },
+    "cadkit/physics/run.py": {
+      "bytes": 15887,
+      "sha256": "5705cc51642949472220b785564dc778f38f6f8bdafa19e5b0ea028e3e1c527e"
+    },
+    "cadkit/physics/runner.py": {
+      "bytes": 55278,
+      "sha256": "3a2fa55755b63c606ae37ae2f43f15e710ffa65334f61d8997abc152f67d4bd7"
+    },
+    "cadkit/physics/scenario.py": {
+      "bytes": 49340,
+      "sha256": "710abe8a4ea2149489abc4c8bb8cecc994ccf907427068cc6f509eca1d06f803"
+    },
+    "cadkit/physics/scene.py": {
+      "bytes": 23393,
+      "sha256": "dcf75178c54bdb6703f192d75e09dbaeef9d0527a528eb594a057224da2839c1"
+    },
+    "cadkit/physics/schema.py": {
+      "bytes": 27557,
+      "sha256": "465649d29d21e23948055d8120b9bcc28f14f2b4ee8060cd9268a17a486e0064"
+    },
+    "cadkit/physics/state_archive.py": {
+      "bytes": 20289,
+      "sha256": "76678252e4b3b89139672054eeec60b11a4c9d9d4927cd15b1f5fad5b83985af"
+    },
+    "cadkit/physics/telemetry.py": {
+      "bytes": 48529,
+      "sha256": "b850afdd6d64f0436e7e418236e8f61f31b7952c05cbd67a920b8c81fe21cb5a"
+    },
+    "cadkit/physics/units.py": {
+      "bytes": 2428,
+      "sha256": "2074216c83a9ee1bb7319d6c57a9bdcc44e794c1a18aa21b445dc055afe3a215"
+    },
+    "cadkit/project.py": {
+      "bytes": 4774,
+      "sha256": "e3b5bec68791c23b10555ebfc0afe926cd09d61a35432f0014b69e2646a5e4ef"
+    },
+    "cadkit/render.py": {
+      "bytes": 5969,
+      "sha256": "4f0bf0c8d5e9953bd4415241b5212508235a3f4f79eac4c867656f5ab5252040"
+    },
+    "docs/mujoco-architecture-review.md": {
+      "bytes": 73602,
+      "sha256": "84f826146d4033073087da26ef0bf72f7ab7108d92077fc42e2d05928c46b111"
+    },
+    "docs/mujoco-m0-report.md": {
+      "bytes": 21640,
+      "sha256": "c71bf255a038ab61121e9eb1098abbeadc6d63d1b67701310e22057dc12bb42d"
+    },
+    "docs/mujoco-m0-supervisor-review.md": {
+      "bytes": 2278,
+      "sha256": "3d281292ae8bf2fa1d24db15cdf4507e2ebb4f30780ef1659c7a8546b74ecbcf"
+    },
+    "docs/mujoco-m1-report.md": {
+      "bytes": 17757,
+      "sha256": "3f4e09f9f6798179cbce3323aef657141651e05ec324493d59c0526d984ed9bc"
+    },
+    "docs/mujoco-m1-supervisor-review.md": {
+      "bytes": 2881,
+      "sha256": "41a2280faa552a57481c2ebf99bbf9e092cc965af769ee9604415b8f792a627c"
+    },
+    "docs/mujoco-m2a-report.md": {
+      "bytes": 13913,
+      "sha256": "7b68e94e1e45fd21bdd62bfbec4694691404d5b5abd6cfe5493cecc482d329fb"
+    },
+    "docs/mujoco-m2a-supervisor-review.md": {
+      "bytes": 3210,
+      "sha256": "7a7bdf6b12b7249dc1f4005882977692ab1de7ff1015d05963a0bf4cd22b1e30"
+    },
+    "docs/mujoco-m2b-report.md": {
+      "bytes": 12583,
+      "sha256": "babefc10f9b93cea566d29ad6c6d5de2df625cc8c5ea4c99eec4131004795783"
+    },
+    "docs/mujoco-m2b-supervisor-acceptance.md": {
+      "bytes": 3177,
+      "sha256": "93fedd15b3123d7d72c00f0d5a88dbd4d771096347941d6b7d0d8dc60cc41b90"
+    },
+    "docs/mujoco-m2b-supervisor-review-2.md": {
+      "bytes": 2829,
+      "sha256": "c0bcc48e5b1075ae36c472b40951320f0833f2e804bbe1610a900242d7f01e93"
+    },
+    "docs/mujoco-m2b-supervisor-review.md": {
+      "bytes": 4519,
+      "sha256": "8840612f03a283a28cd0bc95db839e18b5caa8d6062d0d18b486d8de6eca24a5"
+    },
+    "docs/mujoco-m3-supervisor-review.md": {
+      "bytes": 5158,
+      "sha256": "e61b726fc216cad1c0e8ddfdea979e23ca6b9cfa632f7ec80de37316899e8afa"
+    },
+    "docs/mujoco-m3a-report.md": {
+      "bytes": 14228,
+      "sha256": "630705b3ed13bb30bd8ac966829f47f8e5014fe9426cc258ac4cbc9b8950486f"
+    },
+    "docs/mujoco-m3a-retry-review.md": {
+      "bytes": 2311,
+      "sha256": "7a97da2b701b8ee3a5e8f98c7200632ac8df923c8a58778686be3f5e6079d0bc"
+    },
+    "docs/mujoco-m3a-supervisor-review.md": {
+      "bytes": 4510,
+      "sha256": "aced3d70e775d9ba6ac75e080edbf6c8b018cb688cc59819244471f3591d8d73"
+    },
+    "docs/mujoco-m3b-packet.md": {
+      "bytes": 4969,
+      "sha256": "71d98a1ad2f55a2c121c73bacc625f70defa873c1bfba1533aa4979aabd5a902"
+    },
+    "docs/mujoco-m3b-repair-report.md": {
+      "bytes": 22094,
+      "sha256": "6a8e56645ee7c617b0be3902957988497156349833dcac4ea490dcc4aaddea60"
+    },
+    "docs/mujoco-m3b-report.md": {
+      "bytes": 19728,
+      "sha256": "0c3533ff4e8c743ac73cee1c12172c291ff402e9c8f991fd8458abf44fd46a9c"
+    },
+    "docs/mujoco-m3b-supervisor-acceptance.md": {
+      "bytes": 5367,
+      "sha256": "0caa12426ea705c57e96d422794fe8971458b70ce656df6e6ee62794016453a1"
+    },
+    "docs/mujoco-m3b-supervisor-review.md": {
+      "bytes": 5914,
+      "sha256": "13cf3e5c48371eba7fa7f145a6ed2a505ebefabb62a6c4c090b27a0d9d9f60a2"
+    },
+    "docs/mujoco-m4a-packet.md": {
+      "bytes": 6734,
+      "sha256": "3003811ae5a3121287c44913065367cd5f732b7cb5e1c973f912c6338b1551ad"
+    },
+    "docs/mujoco-m4a-provider-block.md": {
+      "bytes": 4888,
+      "sha256": "cb015b6640370e0873303645a93dc1399cfb58b8ecbf5a466cc8960f584ac06d"
+    },
+    "docs/mujoco-m4a-repair-report.md": {
+      "bytes": 9540,
+      "sha256": "8cf0047b581be4bb2dcbba4bf876ca1849690782abfde368b4157182e99c1627"
+    },
+    "docs/mujoco-m4a-report.md": {
+      "bytes": 14626,
+      "sha256": "01f3fe2ff64fc5d2bc3be3873a8d754249c536a69fc5de0b96f6d96b922c451c"
+    },
+    "docs/mujoco-m4a-supervisor-acceptance.md": {
+      "bytes": 4407,
+      "sha256": "7a985b1fc303b0473b4b941af329892c63f6f9309108643b4d827e1a4659149c"
+    },
+    "docs/mujoco-m4a-supervisor-review.md": {
+      "bytes": 6471,
+      "sha256": "75a71773ed6744f1fd87dc6a2e7ecd7ff33df69770dfefef6699ba496ea417c9"
+    },
+    "docs/mujoco-m4b-packet.md": {
+      "bytes": 7669,
+      "sha256": "1c85b855e59767fe1dbbe0ad858f863f80eaf2a2608c3f388f35227af38580be"
+    },
+    "docs/mujoco-m4b-repair-report.md": {
+      "bytes": 9994,
+      "sha256": "c13621e305bee923d575216b1a2442bd4545f60628ee4cd5b2a23296c8508939"
+    },
+    "docs/mujoco-m4b-report.md": {
+      "bytes": 9712,
+      "sha256": "33d234ec77d152a4f0434322ff857944cbfabe60b38171fd557f5425577e8c02"
+    },
+    "docs/mujoco-m4b-supervisor-acceptance.md": {
+      "bytes": 2146,
+      "sha256": "ac2c55762e38d0051659e189a552eaceba2096484d9fa728a438cc9bab8300b3"
+    },
+    "docs/mujoco-m4b-supervisor-repair-review.md": {
+      "bytes": 5831,
+      "sha256": "655878bcdb0aeb6ff2df6922faa4ccc894aa40fd311de950faa4b0c4c810d3f7"
+    },
+    "docs/mujoco-m4b-supervisor-review.md": {
+      "bytes": 8817,
+      "sha256": "f1bf75a0496e8922ee38e447eb0d5e7b128e1f55f1f8939cd4166569513b588a"
+    },
+    "docs/mujoco-m4c-packet.md": {
+      "bytes": 7528,
+      "sha256": "c0f3ce1152cb4a41937bfbb3745237e5f472cebf12f337391e125e8e9eb5416e"
+    },
+    "docs/mujoco-m4c-repair-report.md": {
+      "bytes": 10565,
+      "sha256": "6ddbdb763057ebeadea07942d8ceb73e648d44e27e7a0f597744fc6aef035eea"
+    },
+    "docs/mujoco-m4c-report.md": {
+      "bytes": 18677,
+      "sha256": "b7a354d12b4c42b56b688534b698035b9d55e02b5462a16978b314cf5749ce89"
+    },
+    "docs/mujoco-m4c-supervisor-acceptance.md": {
+      "bytes": 3045,
+      "sha256": "0404bbdbbd6dbbf1201d60481867851dfa893740791326455a4aa197030d18b2"
+    },
+    "docs/mujoco-m4c-supervisor-review.md": {
+      "bytes": 6600,
+      "sha256": "ce645eb787b8428c1a610fc4ce704b77500a42e6f5656dbf5f87d6467f6d059c"
+    },
+    "docs/mujoco-m5a-packet.md": {
+      "bytes": 11206,
+      "sha256": "178b11dbbd4bb634252e403a8dfec4aabf5e2c145ab14ab0dfd94dbc5dd60098"
+    },
+    "docs/mujoco-m5a-plan-review.md": {
+      "bytes": 12169,
+      "sha256": "6f69815effc9afee57afdebf35179757e46760538b19cc806955b6f3ec77247a"
+    },
+    "docs/mujoco-m5a-plan-supervisor-review-2.md": {
+      "bytes": 3360,
+      "sha256": "f781da53fd68aa7cf924903944d2a2f355379eb821e68e6d1e4d6399e1f19d55"
+    },
+    "docs/mujoco-m5a-plan-supervisor-review.md": {
+      "bytes": 5350,
+      "sha256": "0d073919c60337f1bcf407fee5e0ede73592abcaacde869a3cfd82b525e3eb12"
+    },
+    "docs/mujoco-m5a-plan.md": {
+      "bytes": 57003,
+      "sha256": "a18094d51834192bdfbd11c41003fbdfa39ca06a498045d949d7c5c9f71657cc"
+    },
+    "docs/mujoco-m5a-planning-packet.md": {
+      "bytes": 3515,
+      "sha256": "db87e6ff9af1e789d2b8ffd3cd800d2e7ea556a949dcfb4d01d74ac0a402a0bd"
+    },
+    "docs/mujoco-orchestration.md": {
+      "bytes": 30754,
+      "sha256": "76840254276520f2fed90c694a848f53e6975f1ec42417742c566bc6622206a2"
+    },
+    "docs/mujoco-paused.md": {
+      "bytes": 3655,
+      "sha256": "a54299d95ff636ddf7dde83ffd670498f6d198466d8b57d34f24b340f4ebd202"
+    },
+    "docs/mujoco-reviewer-policy.md": {
+      "bytes": 3858,
+      "sha256": "9a07249afa5e7a888fd2a87c053af52b20c1f519dbe1af15569246637f31c466"
+    },
+    "docs/mujoco-supervision-renewal-1.md": {
+      "bytes": 2082,
+      "sha256": "d98bade010d016d76770f0518dd5d2257cfcbe4ee834b9e8ac00aaa45fda5838"
+    },
+    "docs/mujoco-supervision-renewal-2.md": {
+      "bytes": 4701,
+      "sha256": "67419d180f2f7fd2522c812b96d853b7726d102dd5ee8bdb5755d79103b1ed63"
+    },
+    "docs/mujoco-supervision-renewal-3.md": {
+      "bytes": 3390,
+      "sha256": "4320bb888f74b494c818eaf002058a957aed7eb6a8179d4f84638f178410530f"
+    },
+    "docs/mujoco-supervision-renewal-4.md": {
+      "bytes": 5089,
+      "sha256": "fb48c03690f5f78519923344dffedcf1c4864d7f135eb0384ab4d63ac2e600a7"
+    },
+    "docs/physics-m4a-acceptance.schema.json": {
+      "bytes": 10960,
+      "sha256": "787bf3f13f33d8e9c0f5365ad739001bcfa6f49f82bacf00e8967d929e3f7b95"
+    },
+    "docs/physics-m4a-scenario.schema.json": {
+      "bytes": 2902,
+      "sha256": "8257b99e2739729a3f7c3fe86ae15e4b6ff8c27913d4189b85834cba5a4bbb0f"
+    },
+    "docs/physics-m4a-summary.schema.json": {
+      "bytes": 2246,
+      "sha256": "4651755d7a9e36454c2185934748155dceac6670fd7dc93d3f3b79e723b4cebb"
+    },
+    "handoff.md": {
+      "bytes": 5084,
+      "sha256": "67619b067e5bbb39dab2a512b8a1c9d23bd210ea6406c16ab57aa86b8cecfa67"
+    },
+    "misty-knitting-widget.md": {
+      "bytes": 11325,
+      "sha256": "85ba3f8c947647bb171b47e0cb8dcfeb75d58b2a1cd54921f1be4b3208d2b7a3"
+    },
+    "plan-first-prototype.md": {
+      "bytes": 35976,
+      "sha256": "b50f6ef0af7542f501cccb8f463ff3493e86de25ae18da0336bc3adca2d315a2"
+    },
+    "plan-mujoco.md": {
+      "bytes": 46653,
+      "sha256": "4f69292c97bd03aab221f3c36b5569f8cbe546896b11907ac484555836092f76"
+    },
+    "plan-pockey-dispenser.md": {
+      "bytes": 21496,
+      "sha256": "444891b5ead88ff805d2f7d8603512865b447921f3b9584853c344ba708f2e66"
+    },
+    "projects/__init__.py": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "projects/armor/__init__.py": {
+      "bytes": 767,
+      "sha256": "1a753a272306f9d59cdfc249c1fb1e33e6dec4238fa27735fe95e370b8e25d84"
+    },
+    "projects/armor/checks.py": {
+      "bytes": 1721,
+      "sha256": "f177ac6812f843b57fe80fd15f0531f827a6e8f3f3704075444787174e37919b"
+    },
+    "projects/armor/models/__init__.py": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "projects/armor/models/_armor_base.py": {
+      "bytes": 5856,
+      "sha256": "0fa1bbbad13b09fd972b59a506f72aadbc612b952114828bfa7b08eb04b5505c"
+    },
+    "projects/armor/models/armor_industrial.py": {
+      "bytes": 41875,
+      "sha256": "8edf0f45d5514cef47f8203a817f01e2eca5c80b1141173f4c848e16287ef13f"
+    },
+    "projects/armor/models/armor_neon.py": {
+      "bytes": 23546,
+      "sha256": "5fdab5e7586415dbbf1b410f4e683e495c0d099ca91ee6f8e6add8887cc2abd8"
+    },
+    "projects/armor/models/armor_proto.py": {
+      "bytes": 469,
+      "sha256": "c60944fab9f2dccfa06ed3e0618f7eac64429026737ae3260f3d54457cff105f"
+    },
+    "projects/armor/models/demo_cube.py": {
+      "bytes": 570,
+      "sha256": "32b2835c6e561a58c0efefd4f7e73d529f4e0740fb21ee97ebb5cffa044d7cde"
+    },
+    "projects/armor/models/fit_test.py": {
+      "bytes": 3903,
+      "sha256": "b3f35f0a57f9b3eb009b10f5d1e0a832512c20df5c25ca4dd5d15a57ed747fc3"
+    },
+    "projects/armor/params.py": {
+      "bytes": 5000,
+      "sha256": "85238844f5a3bb121a9042373668a589b544bde86bf29d4999d58b93f4b11613"
+    },
+    "projects/armor/params.toml": {
+      "bytes": 2507,
+      "sha256": "75d6758922add45e7c0f9d454e421a015b9d2973f783f42642aa98bb575f4b5e"
+    },
+    "projects/armor/part.py": {
+      "bytes": 738,
+      "sha256": "dabd7814ce788a8fe197fec1c333aeb2617102dca39756932646a0ad8d1eef74"
+    },
+    "projects/armor/render.py": {
+      "bytes": 10311,
+      "sha256": "8b5e06edcfbfdb2bfb6708f53a23810b03fd8755ab39d0f8b16d0c785e22c579"
+    },
+    "projects/pocky/README.md": {
+      "bytes": 3983,
+      "sha256": "04252fa3cf106687533cd3dab8a245377f256ec1d6d94c6fbb11706cd83738d1"
+    },
+    "projects/pocky/__init__.py": {
+      "bytes": 689,
+      "sha256": "c6ab7c9ddd8a8bc48306c98069775c7121e6fca1bef40df50e95c240d3693cdc"
+    },
+    "projects/pocky/docs/assembly.md": {
+      "bytes": 7725,
+      "sha256": "af56a4744873f34bfc39cc85f8925be32dfb8272970f867274719d8edc7300aa"
+    },
+    "projects/pocky/docs/assembly/00-parts.png": {
+      "bytes": 230915,
+      "sha256": "6c5574c8689bf42a0f969112b6cc34190d6180d159aa213de772935e1e88a72d"
+    },
+    "projects/pocky/docs/assembly/00b-small-parts.png": {
+      "bytes": 25895,
+      "sha256": "ecc4f9d92482ad548df7fd9c083a55575522d916ae74dd49177b80c44519173e"
+    },
+    "projects/pocky/docs/assembly/01-chassis.png": {
+      "bytes": 37976,
+      "sha256": "efa5b78aa20a7c44e7f395033722b342425877adbda1d22d1a6117e3bf73b932"
+    },
+    "projects/pocky/docs/assembly/02-seat.png": {
+      "bytes": 56697,
+      "sha256": "c59b542ce3673ca6e38893a7ed715dc0d34769c6b530c3dd27db63d2dcfeef96"
+    },
+    "projects/pocky/docs/assembly/03-spring.png": {
+      "bytes": 72953,
+      "sha256": "3ee09fd137929c3f90004c951f2aab1b00c394610d1f0acbdf0b348da50b81de"
+    },
+    "projects/pocky/docs/assembly/04-rod.png": {
+      "bytes": 38037,
+      "sha256": "972345aafa96871e7a50d43885ad5f8aa0142256ad24e483dc406cbe73244f2f"
+    },
+    "projects/pocky/docs/assembly/05-crank.png": {
+      "bytes": 60160,
+      "sha256": "98cc75689c3bfe312dbea8ef584365580c4e21208b8b055d7df1dd0731cbe4fd"
+    },
+    "projects/pocky/docs/assembly/06-pivot-peg.png": {
+      "bytes": 38877,
+      "sha256": "7afcfaa95a3dbd7461a30ee1fc5351c3aa5568f61a6012c5d0111254af5f6664"
+    },
+    "projects/pocky/docs/assembly/06b-pivot-below.png": {
+      "bytes": 38702,
+      "sha256": "04a477d6956de24040caf1d124d0e70cf9da6888aa2e8d78989be4d51b1c883d"
+    },
+    "projects/pocky/docs/assembly/07-pusher.png": {
+      "bytes": 54982,
+      "sha256": "01f4112babafb9fff85bf00c56be02ba15af72eb5dc3f828d8a75b63be9c2b37"
+    },
+    "projects/pocky/docs/assembly/08-pusher-peg.png": {
+      "bytes": 53013,
+      "sha256": "63ec3a350decd4cdfaf3bf31a9a3568be31ba45d89e9f27e593c3219159c33ba"
+    },
+    "projects/pocky/docs/assembly/09-button-peg.png": {
+      "bytes": 77634,
+      "sha256": "466a4dc7bfd75a2ac41aeeda2f853800aff6d1f06f710f93016e152979857d9d"
+    },
+    "projects/pocky/docs/assembly/10-body.png": {
+      "bytes": 52990,
+      "sha256": "f533794cd1be7f6c4b07bb32c4f3a5d47f744ecaed85cebe1fb9bab119027b2a"
+    },
+    "projects/pocky/docs/assembly/11-hook.png": {
+      "bytes": 54727,
+      "sha256": "f5da1f1957f3c8897a42107dc394a18a17a774651d5c70d9646597e6532b00d4"
+    },
+    "projects/pocky/docs/assembly/12-shims.png": {
+      "bytes": 61209,
+      "sha256": "7dce139d8261b577751cc1afc495a090a9cf74a02db1b38362cd717012ced306"
+    },
+    "projects/pocky/docs/assembly/13-shim-close.png": {
+      "bytes": 55146,
+      "sha256": "b8d1205022025b3ce6bcd645eb42aa177621b4ab3b7710a85c8b58e7b308e67e"
+    },
+    "projects/pocky/docs/assembly/14-lip.png": {
+      "bytes": 103230,
+      "sha256": "6febe7ea03975a001dcf6c20f70d446a602181bef145992211c7c6659c459dcb"
+    },
+    "projects/pocky/docs/assembly/14b-lip-hook.png": {
+      "bytes": 63414,
+      "sha256": "0baccf02d66283f239e469646a3065246453cbb148aa03edfd9c794131fec8ad"
+    },
+    "projects/pocky/docs/assembly/15-finished.png": {
+      "bytes": 61220,
+      "sha256": "54e7c3b66648ae7558a18e2b3077e160fbff5c83a003a8e7d933c386f77da0f2"
+    },
+    "projects/pocky/docs/assembly/16-inside.png": {
+      "bytes": 65364,
+      "sha256": "1bf51df3d745c6d2db735c18d1eb4e42a4a337814be67549bb619592d5c0f7f7"
+    },
+    "projects/pocky/docs/assembly/17-dummy.png": {
+      "bytes": 70619,
+      "sha256": "7140a48df992eb03cacc3911e959ff59c55a2966e43ba6e5840c569d1c7d21bb"
+    },
+    "projects/pocky/docs/kinematic-diagram.png": {
+      "bytes": 279651,
+      "sha256": "1e1f7fd6cb683c986b6b64b1fa62ed8d60ab08b9f689a2be7a07600639da9dc3"
+    },
+    "projects/pocky/docs/m0-report.md": {
+      "bytes": 7789,
+      "sha256": "2e961910bd130d091212fb0a3ca233ce5079408da9b9665d085802c53dc3d8b9"
+    },
+    "projects/pocky/docs/m1_sweep.py": {
+      "bytes": 5634,
+      "sha256": "62fe18fbdc4c1bb044079c966907ca58b477e2091c9501e8b4ac0462534f8ddb"
+    },
+    "projects/pocky/docs/mechanism-proposal.md": {
+      "bytes": 16127,
+      "sha256": "2bfd402236ce20c92d56955d3e393e6bd6b6d13a4f330307cd53874d738eb004"
+    },
+    "projects/pocky/docs/proposal-diagram.png": {
+      "bytes": 170962,
+      "sha256": "39293a35b9adadc9e54730a143eca6c0f6c119f38bcab3068650855015bdd468"
+    },
+    "projects/pocky/docs/proposal_sweep.py": {
+      "bytes": 13700,
+      "sha256": "34591329ad320f39d96cb4dcf10f8509e98cca9df526a499b500a5c4b7ced431"
+    },
+    "projects/pocky/docs/prototype-plan.md": {
+      "bytes": 205,
+      "sha256": "2d8468674fd8ac3b2fcfc58da8651c0a1ded819b8b2d1bd0382b279c2fe3081f"
+    },
+    "projects/pocky/docs/prototype_animation.py": {
+      "bytes": 16919,
+      "sha256": "41d926da7c7a72112a1984488eb3786058e7f18a60b4bb2a0e576735f83a303f"
+    },
+    "projects/pocky/docs/prototype_sweep.py": {
+      "bytes": 9865,
+      "sha256": "2a9b8ef0a0d6b1e34f9010f4e3ed22ff193cee1e9144a92d9ec0eaa69f918530"
+    },
+    "projects/pocky/docs/reference-notes.md": {
+      "bytes": 28258,
+      "sha256": "936f762e99937178feab44cbedcda03f00e3f16243292b407eb04e479eed50f1"
+    },
+    "projects/pocky/geometry/__init__.py": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "projects/pocky/geometry/linkage.py": {
+      "bytes": 15738,
+      "sha256": "7e96a9063675925a84df59c9b32b24282827d5f3e007f26e6e4be2e0d9cf49f2"
+    },
+    "projects/pocky/geometry/packet.py": {
+      "bytes": 840,
+      "sha256": "0e67d3f81b6469d9c01a08cc91adce570d72fc0bbc0760854ccd2955a9da4571"
+    },
+    "projects/pocky/geometry/prototype.py": {
+      "bytes": 34265,
+      "sha256": "2830380556c55ba9fc60f9009bf5edefe3950aa12b66a861b4d50de43ba3496d"
+    },
+    "projects/pocky/models/__init__.py": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "projects/pocky/models/linkage_motion.py": {
+      "bytes": 735,
+      "sha256": "98e2766679191508bd669b6d9c8609e3c205a1106a9c2b324d1521efea631234"
+    },
+    "projects/pocky/models/packet_dummy.py": {
+      "bytes": 554,
+      "sha256": "ce5cf1e236aa9532d76e202ac84091eedbbdc0630242173c9d7d29358a5fdb25"
+    },
+    "projects/pocky/models/prototype.py": {
+      "bytes": 855,
+      "sha256": "fc4c2f424fd2349a2a228ac2334a1304725e0410a2212cfd4d022cd7f6460acf"
+    },
+    "projects/pocky/params.py": {
+      "bytes": 1799,
+      "sha256": "e9596f6df6f37f715f98054d69c1135538a95dffd17e70570ba9079971380ad5"
+    },
+    "projects/pocky/params.toml": {
+      "bytes": 1282,
+      "sha256": "9bada78097a6e9c565f38b02d4e7b1dabcf765d45ab8276995922019db5b8b15"
+    },
+    "projects/pocky/physics/acceptance.toml": {
+      "bytes": 2922,
+      "sha256": "518a45ffc4592ca602be4c33c59681038e43dedaa15b688312202c3a57ff6ca2"
+    },
+    "pyproject.toml": {
+      "bytes": 1045,
+      "sha256": "7b94ff6a65879931005a115072c9423d94a738d9d8eced282284152becfa635a"
+    },
+    "report-current-progress.md": {
+      "bytes": 9072,
+      "sha256": "8b7bb6a0a7dfb3f865331e0d5088a3504479fea04409af98822c0356ab401901"
+    },
+    "tests/conftest.py": {
+      "bytes": 891,
+      "sha256": "431ce140900800d57ca661e01162c35bf72a5451c3cd3f7cd43b92434c50ae4f"
+    },
+    "tests/fixtures/lid_14in.toml": {
+      "bytes": 2625,
+      "sha256": "3bda2a5a2106df1cdaeef9ebfe6545c02ae82b6e3a0f8650ebdca092faae7df5"
+    },
+    "tests/test_armor_checks.py": {
+      "bytes": 2810,
+      "sha256": "6481f9ee6a9494ca9f8e1d163448dbca93ec465dfaf2dc6cc89453a054e8455a"
+    },
+    "tests/test_armor_models.py": {
+      "bytes": 17534,
+      "sha256": "9a274051296b4bf615c9b269f603fec1014cec6a2ec7d84d15a987bbdef1e4c7"
+    },
+    "tests/test_armor_params.py": {
+      "bytes": 2415,
+      "sha256": "4dd6c612aca05cc82fb5a68453e241228c121b05b0e43b4a90410dabe676ac86"
+    },
+    "tests/test_cadkit_checks.py": {
+      "bytes": 2720,
+      "sha256": "eb70ed568e209c911502d812005b2c2241e951e2842920097d76052f5587517c"
+    },
+    "tests/test_cadkit_export_cli.py": {
+      "bytes": 2882,
+      "sha256": "2e19256f8c74bc5f115c44c6721753b3c0f1438b67b0b72774626a4737291bb3"
+    },
+    "tests/test_cadkit_params.py": {
+      "bytes": 731,
+      "sha256": "3d3cd206cc41a3df740a2c88eb3bd0c06e7fe8b66076a0f082e4a90c35982fdd"
+    },
+    "tests/test_cadkit_physics_export_cli.py": {
+      "bytes": 5419,
+      "sha256": "bec0cc935d6e08cefbcf24cf2b8fdcff61bc50cd040b9155a8699058e19f927a"
+    },
+    "tests/test_cadkit_physics_gravity_drop.py": {
+      "bytes": 14393,
+      "sha256": "4e631d01f815a9f03010a0947878b28dbcf161a601953c63a7ee83bea91ccbc3"
+    },
+    "tests/test_cadkit_physics_hollow.py": {
+      "bytes": 30396,
+      "sha256": "ff35e52b400427cad8f2fe8aee1d6e448472d6cc812ed3aaf34078af204759fa"
+    },
+    "tests/test_cadkit_physics_m4a.py": {
+      "bytes": 41978,
+      "sha256": "89713befd311c270c3686f9ca5598a24039bb637ef4ef96319c37aefa38ccd01"
+    },
+    "tests/test_cadkit_physics_m4b_adversarial.py": {
+      "bytes": 23875,
+      "sha256": "2da0ad0f0fa698b0b7b1acaed3a8c2a759d396d55bdc9bd6acf9c0eab0b1e803"
+    },
+    "tests/test_cadkit_physics_m4b_replay.py": {
+      "bytes": 9211,
+      "sha256": "c6fe7e957eb51f36b1310f2e27ff682ff44d0debb42ba7909478c285c020f891"
+    },
+    "tests/test_cadkit_physics_m4b_typed.py": {
+      "bytes": 2755,
+      "sha256": "d81ba1e64cacaacb63f2cbf75ad02ddafc003cd88756aec1fd67786b289c59b3"
+    },
+    "tests/test_cadkit_physics_m4c_acceptance.py": {
+      "bytes": 10325,
+      "sha256": "ac5a571b3d4c5da10740f3b19e195d49672b5c30abb7c4acacf97aace3965f74"
+    },
+    "tests/test_cadkit_physics_m4c_events.py": {
+      "bytes": 25635,
+      "sha256": "852c96a9371ee509f0ad3e6e03761e37b0129e6df7bd10f69951feffe3f1d3d7"
+    },
+    "tests/test_cadkit_physics_m4c_fixture.py": {
+      "bytes": 16264,
+      "sha256": "e813687320f409850b09733b64d495430439396b8b5b8d31affe41c8559bddac"
+    },
+    "tests/test_cadkit_physics_mechanics.py": {
+      "bytes": 57790,
+      "sha256": "56c755d3d5420b977134027c88efc1982df41205e119ea5dcdb882c7c504db3f"
+    },
+    "tests/test_cadkit_physics_optional.py": {
+      "bytes": 2760,
+      "sha256": "282a44ab71fcb9aad04bdc3f50d58f5238b481f3f8f275be93ca76e3c4575853"
+    },
+    "tests/test_cadkit_physics_scenario.py": {
+      "bytes": 11111,
+      "sha256": "31b2678633e4967f0cf647e2d8c97b3dca907967b97978aa29b32735b83d1927"
+    },
+    "tests/test_cadkit_physics_scene.py": {
+      "bytes": 18807,
+      "sha256": "5fe4a99b7ae5518fc4535f44ad124fbbe0e7bdae0621e0fabf09c4996f577e77"
+    },
+    "tests/test_cadkit_physics_units.py": {
+      "bytes": 2500,
+      "sha256": "13be6c87d5d17384f94e23f8dd0a6fa4c2e3f78b748375c2e721ab633fedb437"
+    },
+    "tests/test_pocky_geometry.py": {
+      "bytes": 4096,
+      "sha256": "22ddebb47f5285f5393aa98ac8dd5572019fb542f54cf9598cf077bd80e59538"
+    },
+    "tests/test_pocky_linkage.py": {
+      "bytes": 6143,
+      "sha256": "ab71752c304bb8ea72ae5be10879d50e0e7c89aa4b49dafbeb002a968de6b430"
+    },
+    "tests/test_pocky_params.py": {
+      "bytes": 2053,
+      "sha256": "95718c6b733276af86ade557f7538fe28510bda6c4c882f60fee9480010fe00f"
+    },
+    "tests/test_pocky_prototype.py": {
+      "bytes": 3729,
+      "sha256": "c9f19d99b53d688b315fe8c88159bc46fc1745da2c1418a60b517d33db6a8183"
+    },
+    "uv.lock": {
+      "bytes": 310653,
+      "sha256": "a53eaa687da8fcb880032ee9a647b9bf3f7c47afb40a82fa7bb0eb0ebab1eeee"
+    }
+  },
+  "included_roots": [
+    "cadkit/",
+    "projects/",
+    "tests/",
+    "docs/",
+    "CLAUDE.md",
+    "MEASURING.md",
+    "README.md",
+    "handoff.md",
+    "misty-knitting-widget.md",
+    "plan-first-prototype.md",
+    "plan-mujoco.md",
+    "plan-pockey-dispenser.md",
+    "pyproject.toml",
+    "report-current-progress.md",
+    "uv.lock",
+    ".gitignore",
+    ".python-version",
+    "MUJOCO_LOG.TXT"
+  ],
+  "kind": "m5a-plan-correction-after",
+  "workspace": "/Users/daniel_l_newman/src/cadstudio"
+}

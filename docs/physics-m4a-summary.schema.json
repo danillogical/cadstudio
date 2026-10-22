@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadkit/physics/summary-m4a-1.schema.json",
+  "title": "cadkit M4a run summary",
+  "description": "Strict JSON summary written next to the manifest and readable report. Non-finite measured values are serialized as null.",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "run_id", "run_dir", "scenario", "acceptance",
+    "fixture", "seed", "versions", "solver", "plan", "phases", "validity", "checks",
+    "metrics", "contacts", "states", "telemetry", "scene", "physical_inputs", "artifacts"
+  ],
+  "properties": {
+    "schema_version": {"const": "m4a-1"},
+    "status": {"enum": ["PASS", "FAIL", "INCONCLUSIVE", "ERROR"]},
+    "run_id": {"type": "string"},
+    "run_dir": {"type": "string"},
+    "created_utc": {"type": "string"},
+    "scenario": {
+      "type": "object",
+      "required": ["id", "hash", "sha256"],
+      "properties": {
+        "id": {"type": "string"}, "hash": {"type": "string"},
+        "sha256": {"type": "string"}
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["id", "hash", "sha256"],
+      "properties": {
+        "id": {"type": "string"}, "hash": {"type": "string"},
+        "sha256": {"type": "string"}
+      }
+    },
+    "fixture": {"type": "string"},
+    "seed": {"type": "integer"},
+    "timestep_s": {"type": "number"},
+    "versions": {"type": "object"},
+    "solver": {"type": "object"},
+    "plan": {"type": "object"},
+    "phases": {"type": "array"},
+    "validity": {
+      "type": "object",
+      "required": ["ok", "reasons"],
+      "properties": {
+        "ok": {"type": "boolean"},
+        "reasons": {"type": "array"}
+      }
+    },
+    "checks": {"type": "array"},
+    "metrics": {"type": "object"},
+    "contacts": {"type": "array"},
+    "events": {"type": "array"},
+    "states": {
+      "type": "object",
+      "required": ["initial", "post_settle", "terminal"],
+      "properties": {
+        "initial": {"type": "object"},
+        "post_settle": {"type": "object"},
+        "terminal": {"type": "object"}
+      }
+    },
+    "telemetry": {"type": "object"},
+    "scene": {"type": "object"},
+    "physical_inputs": {"type": "object"},
+    "artifacts": {"type": "object"}
+  }
+}

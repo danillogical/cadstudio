@@ -1,0 +1,50 @@
+{
+  "initial": {
+    "R_a": "identity",
+    "p_a_mm": [
+      0,
+      0,
+      0
+    ],
+    "p_b_mm": [
+      1,
+      0,
+      0
+    ]
+  },
+  "current": {
+    "R_a": "yaw90",
+    "p_a_mm": [
+      0,
+      0,
+      0
+    ],
+    "p_b_mm": [
+      0,
+      1,
+      0
+    ]
+  },
+  "true_relative_position_mm_initial": [
+    1,
+    0,
+    0
+  ],
+  "true_relative_position_mm_current": [
+    1,
+    0,
+    0
+  ],
+  "correct_change_mm": [
+    0,
+    0,
+    0
+  ],
+  "plan_change_mm": [
+    -1,
+    1,
+    0
+  ],
+  "false_translation_norm_mm": 1.4142135623730951,
+  "explanation": "Both bodies undergo the same physical rigid rotation over time; their relative transform is constant. The plan freezes R_a at initial when comparing world separation vectors."
+}

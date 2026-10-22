@@ -1,0 +1,168 @@
+{
+  "kind": "m5a-plan-remediation-probes",
+  "date_utc": "2026-10-22",
+  "method": "read-only build123d/linkage helper probe; no MuJoCo, no export, no test",
+  "source": "projects/pocky/geometry/linkage.py: linkage_from, phi_for_button_fraction, pose_at_phi",
+  "home": {
+    "phi0_rad": 2.0943951023931953,
+    "pusher_pin_x_mm": -103.0,
+    "face_x_mm": -87.0
+  },
+  "resets": [
+    {
+      "fraction": 0.0,
+      "phi_rad": 2.0943951023931953,
+      "crank_delta_rad": 0.0,
+      "rod_travel_mm": 0.0,
+      "pusher_pin_x_mm": -103.0,
+      "pusher_displacement_mm": 0.0,
+      "face_x_mm": -87.0,
+      "face_displacement_mm": 0.0,
+      "protrusion_mm": -5.5
+    },
+    {
+      "fraction": 0.25,
+      "phi_rad": 1.85183122829771,
+      "crank_delta_rad": -0.2425638740954852,
+      "rod_travel_mm": 5.773502691896256,
+      "pusher_pin_x_mm": -91.86750490563072,
+      "pusher_displacement_mm": 11.132495094369276,
+      "face_x_mm": -75.86750490563072,
+      "face_displacement_mm": 11.132495094369276,
+      "protrusion_mm": 1.1324950943692755
+    },
+    {
+      "fraction": 0.5,
+      "phi_rad": 1.5707963267948966,
+      "crank_delta_rad": -0.5235987755982987,
+      "rod_travel_mm": 11.547005383792513,
+      "pusher_pin_x_mm": -78.0,
+      "pusher_displacement_mm": 25.0,
+      "face_x_mm": -62.0,
+      "face_displacement_mm": 25.0,
+      "protrusion_mm": 15.0
+    },
+    {
+      "fraction": 0.75,
+      "phi_rad": 1.2897614252920828,
+      "crank_delta_rad": -0.8046336771011124,
+      "rod_travel_mm": 17.32050807568877,
+      "pusher_pin_x_mm": -64.13249509436926,
+      "pusher_displacement_mm": 38.86750490563074,
+      "face_x_mm": -48.13249509436926,
+      "face_displacement_mm": 38.86750490563074,
+      "protrusion_mm": 28.86750490563074
+    },
+    {
+      "fraction": 1.0,
+      "phi_rad": 1.0471975511965979,
+      "crank_delta_rad": -1.0471975511965974,
+      "rod_travel_mm": 23.09401076758502,
+      "pusher_pin_x_mm": -53.00000000000001,
+      "pusher_displacement_mm": 49.99999999999999,
+      "face_x_mm": -37.00000000000001,
+      "face_displacement_mm": 49.99999999999999,
+      "protrusion_mm": 40.0
+    }
+  ],
+  "wrong_linear_resets": {
+    "fraction_0_25_pusher_mm": 12.5,
+    "fraction_0_75_pusher_mm": 37.5,
+    "error_0_25_mm": 1.367504905630724,
+    "error_0_75_mm": -1.36750490563074,
+    "note": "exceeds the 0.3 mm nominal pin/slot side clearance; would create an artificial initial contact"
+  },
+  "relative_pose_counterexample": {
+    "A_pos_mm": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "B_pos_mm": [
+      1.0,
+      1.0,
+      0.0
+    ],
+    "A_yaw_deg": 90.0,
+    "B_yaw_deg": 90.0,
+    "correct_p_rel_mm": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "wrong_B_Ainv_p_rel_mm": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "wrong_after_common_yaw_90_mm": [
+      -1.0,
+      0.0,
+      0.0
+    ],
+    "wrong_false_translation_change_mm": 1.4142135623730951
+  },
+  "signed_drop_counterexample": {
+    "z_change_m": -0.0004,
+    "maximum_m": 0.0001,
+    "signed_le_maximum": true,
+    "positive_downward_drop_m": 0.0004,
+    "positive_drop_le_maximum": false
+  },
+  "hold_semantics": {
+    "hold_s": 0.5,
+    "sampling": "every integration step (1 ms at base dt) for the full hold window",
+    "requirement": "checks use max-over-window values, not only the end boundary; contact duration uses per-step summed forces",
+    "replay": "re-step with the same scenario/acceptance/options locks and sampling; compare worst-sample times/values and durations within one sample interval"
+  },
+  "rigid_pair_common_rotation": {
+    "initial": {
+      "R_a": "identity",
+      "p_a_mm": [
+        0,
+        0,
+        0
+      ],
+      "p_b_mm": [
+        1,
+        0,
+        0
+      ]
+    },
+    "current": {
+      "R_a": "yaw90",
+      "p_a_mm": [
+        0,
+        0,
+        0
+      ],
+      "p_b_mm": [
+        0,
+        1,
+        0
+      ]
+    },
+    "p_rel_initial_mm": [
+      1,
+      0,
+      0
+    ],
+    "p_rel_current_mm": [
+      1,
+      0,
+      0
+    ],
+    "correct_delta_p_mm": [
+      0,
+      0,
+      0
+    ],
+    "forbidden_initial_frame_world_separation_delta_mm": [
+      -1,
+      1,
+      0
+    ],
+    "forbidden_norm_mm": 1.4142135623730951,
+    "note": "Both bodies share the same rigid rotation over time; attached local axes keep p_rel constant. Freezing R_a(initial) is forbidden."
+  }
+}
