@@ -42,7 +42,20 @@ CHECK_KINDS = (
     "penetration_bound",
     "event_count",
     "event_verdict",
+    "relative_pose",
+    "relative_translation",
+    "contact_duration",
 )
+#: Window semantics. ``end`` evaluates the declared terminal boundary only; the existing
+#: check kinds keep it as their default so their hashes and results are unchanged.
+#: ``max_over_phase`` evaluates every recorded integration state in the phase and reports the
+#: worst one, so a brief interior excursion cannot hide between samples.
+CHECK_WINDOWS = ("end", "max_over_phase")
+#: The near-threshold band is an acceptance-level, opt-in fraction of a declared bound. It is
+#: applied to the bound relative pose/translation checks and to S0's max-over-phase body-speed
+#: and contact-duration maxima, using worst-over-phase evidence; ``0.0`` (the default) disables
+#: it and preserves every prior M4 result.
+MAX_NEAR_THRESHOLD_FRACTION = 0.5
 EVENT_KINDS = ("exit_crossing", "supported_presentation")
 FIXTURE_IDS = ("loaded_slider", "loaded_slider_no_spring",
                "loaded_slider_negative_gear", "drop_box",
@@ -349,7 +362,18 @@ class ValiditySpec:
 
 @dataclass(frozen=True)
 class CheckSpec:
-    """One declarative predicate. Only the fields valid for ``kind`` are populated."""
+    """One declarative predicate. Only the fields valid for ``kind`` are populated.
+
+    Bound relative motion (``relative_pose``, ``relative_translation``) uses the bodies'
+    **current** attached axes: ``p_rel(t) = R_a(t)^T (p_b(t) - p_a(t))`` and
+    ``R_rel(t) = R_a(t)^T R_b(t)``. A common rigid motion of both bodies therefore leaves the
+    relative pose unchanged. ``frame="world"`` is only meaningful for the separately defined
+    signed gravity drop and is restricted to ``axis="z"``.
+
+    ``window="max_over_phase"`` evaluates every recorded integration state of the check's
+    phase (or ``to_phase``) and uses the worst one. The default ``"end"`` evaluates only the
+    declared terminal boundary.
+    """
 
     name: str
     kind: str
@@ -366,16 +390,117 @@ class CheckSpec:
     tolerance: float | None = None
     reference: float | None = None
     maximum: float | None = None
+    max_rotation_rad: float | None = None
+    axis: str | None = None
+    frame: str | None = None
+    lower: float | None = None
+    upper: float | None = None
+    force_threshold_n: float | None = None
+    window: str = "end"
     units: str = ""
 
     def __post_init__(self) -> None:
         if self.kind not in CHECK_KINDS:
             raise ValueError(f"unknown check kind {self.kind!r}")
+        if self.window not in CHECK_WINDOWS:
+            raise ValueError(f"unknown check window {self.window!r}")
+        if self.kind == "relative_translation" and self.frame is None:
+            # Normalize the documented body_a default so a typed spec and a document that
+            # omits the field produce one canonical form and one acceptance hash.
+            object.__setattr__(self, "frame", "body_a")
         if not self.units:
             raise ValueError(
                 f"check {self.name!r} ({self.kind}) needs explicit non-empty units")
 
+    def validate_semantics(self) -> None:
+        """Enforce the same kind-specific rules on typed specs as the file loader.
+
+        The public typed execution path must never write a PASS lock that its own strict
+        loader rejects on replay. This is called from reference resolution, before a run
+        directory is claimed, so construction stays permissive for inspection and tests.
+        """
+        def require(condition: bool, message: str) -> None:
+            if not condition:
+                raise ValueError(f"check {self.name!r} ({self.kind}): {message}")
+
+        def finite(value, field: str, *, nonnegative: bool = True) -> None:
+            require(isinstance(value, (int, float)) and not isinstance(value, bool),
+                    f"{field} must be a number")
+            try:
+                number = float(value)
+            except (OverflowError, ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"check {self.name!r} ({self.kind}): {field} is not representable"
+                ) from exc
+            require(math.isfinite(number), f"{field} must be finite")
+            if nonnegative:
+                require(number >= 0.0, f"{field} must be non-negative")
+
+        if self.kind == "relative_pose":
+            require(bool(self.body_a) and bool(self.body_b),
+                    "body_a and body_b are required")
+            require(self.body_a != self.body_b, "body_a and body_b must differ")
+            require(self.phase is not None, "phase is required")
+            finite(self.maximum, "max")
+            finite(self.max_rotation_rad, "max_rotation_rad")
+            require(self.units == "m", "units must be 'm'")
+            for field in ("axis", "frame", "lower", "upper", "force_threshold_n"):
+                require(getattr(self, field) is None,
+                        f"{field} is not valid for relative_pose")
+        elif self.kind == "relative_translation":
+            require(bool(self.body_a) and bool(self.body_b),
+                    "body_a and body_b are required")
+            require(self.body_a != self.body_b, "body_a and body_b must differ")
+            require(self.from_phase is not None, "from_phase is required")
+            require(self.to_phase is not None, "to_phase is required")
+            require(self.axis in ("x", "y", "z"), "axis must be x, y or z")
+            require(self.frame in ("body_a", "world"),
+                    "frame must be 'body_a' or 'world'")
+            require(not (self.frame == "world" and self.axis != "z"),
+                    "frame='world' is only defined for axis='z' (the signed gravity drop)")
+            finite(self.lower, "lower", nonnegative=False)
+            finite(self.upper, "upper", nonnegative=False)
+            require(self.lower <= self.upper, "lower must not exceed upper")
+            require(self.units == "m", "units must be 'm'")
+            for field in ("maximum", "max_rotation_rad", "force_threshold_n"):
+                require(getattr(self, field) is None,
+                        f"{field} is not valid for relative_translation")
+        elif self.kind == "contact_duration":
+            require(bool(self.body_a) and bool(self.body_b),
+                    "body_a and body_b are required")
+            require(self.body_a != self.body_b, "body_a and body_b must differ")
+            finite(self.force_threshold_n, "force_threshold_n")
+            finite(self.maximum, "max")
+            require(self.units == "s", "units must be 's'")
+            require(self.window == "end",
+                    "contact_duration measures the whole run; window must be 'end'")
+            for field in ("phase", "from_phase", "to_phase", "axis", "frame", "lower",
+                          "upper", "max_rotation_rad"):
+                require(getattr(self, field) is None,
+                        f"{field} is not valid for contact_duration")
+        elif self.kind == "body_speed":
+            require(bool(self.body), "body is required")
+            require(self.phase is not None, "phase is required")
+            finite(self.maximum, "max")
+            require(self.units == "m/s", "units must be 'm/s'")
+            for field in ("max_rotation_rad", "axis", "frame", "lower", "upper",
+                          "force_threshold_n"):
+                require(getattr(self, field) is None,
+                        f"{field} is not valid for body_speed")
+        else:
+            require(self.window == "end",
+                    "window is only valid for body_speed and the bound relative checks")
+            for field in ("max_rotation_rad", "axis", "frame", "lower", "upper",
+                          "force_threshold_n"):
+                require(getattr(self, field) is None,
+                        f"{field} is not valid for {self.kind}")
+
     def to_dict(self) -> dict:
+        # Defaults are omitted so a canonical document round-trips byte-identically and
+        # acceptance hashes recorded before these fields existed stay unchanged.
+        frame = self.frame
+        if self.kind == "relative_translation" and frame == "body_a":
+            frame = None
         return {key: value for key, value in {
             "name": self.name, "kind": self.kind, "joint": self.joint,
             "actuator": self.actuator, "phase": self.phase,
@@ -383,7 +508,12 @@ class CheckSpec:
             "body": self.body, "body_a": self.body_a, "body_b": self.body_b,
             "event": self.event,
             "expected": self.expected, "tolerance": self.tolerance,
-            "reference": self.reference, "max": self.maximum, "units": self.units,
+            "reference": self.reference, "max": self.maximum,
+            "max_rotation_rad": self.max_rotation_rad, "axis": self.axis,
+            "frame": frame, "lower": self.lower, "upper": self.upper,
+            "force_threshold_n": self.force_threshold_n,
+            "window": None if self.window == "end" else self.window,
+            "units": self.units,
         }.items() if value is not None}
 
 
@@ -595,6 +725,26 @@ class AcceptanceSpec:
     source_text: str = field(default="", compare=False, repr=False)
     notes: str = ""
     events: tuple[EventSpec, ...] = ()
+    #: Opt-in band for the bound pose/translation checks and S0's body-speed/contact-duration
+    #: maxima. A passing value within ``fraction * abs(bound)`` of a declared bound is
+    #: INCONCLUSIVE rather than PASS. Zero disables the band, which is the default so every
+    #: earlier M4 acceptance is unchanged. A zero bound has no band.
+    near_threshold_fraction: float = 0.0
+
+    def __post_init__(self) -> None:
+        fraction = self.near_threshold_fraction
+        if isinstance(fraction, bool) or not isinstance(fraction, (int, float)):
+            raise ValueError("near_threshold_fraction must be a number")
+        try:
+            number = float(fraction)
+        except (OverflowError, ValueError, TypeError) as exc:
+            raise ValueError("near_threshold_fraction is not representable") from exc
+        if not math.isfinite(number):
+            raise ValueError("near_threshold_fraction must be finite")
+        if not 0.0 <= number <= MAX_NEAR_THRESHOLD_FRACTION:
+            raise ValueError(
+                f"near_threshold_fraction must be within [0, "
+                f"{MAX_NEAR_THRESHOLD_FRACTION}], got {number!r}")
 
     def to_dict(self) -> dict:
         out = {
@@ -607,6 +757,8 @@ class AcceptanceSpec:
             out["notes"] = self.notes
         if self.events:
             out["events"] = [e.to_dict() for e in self.events]
+        if self.near_threshold_fraction:
+            out["near_threshold_fraction"] = self.near_threshold_fraction
         return out
 
     def hash(self) -> str:
@@ -763,7 +915,7 @@ def load_acceptance_toml(path: str | Path) -> AcceptanceSpec:
 def _acceptance_from_obj(obj: dict, raw_text: str) -> AcceptanceSpec:
     where = "acceptance"
     _check_keys(obj, where, required=("schema_version", "acceptance_id", "checks"),
-                optional=("validity", "notes", "events"))
+                optional=("validity", "notes", "events", "near_threshold_fraction"))
     version = _string(obj, "schema_version", where)
     if version != ACCEPTANCE_SCHEMA_VERSION:
         raise ScenarioError(
@@ -808,8 +960,16 @@ def _acceptance_from_obj(obj: dict, raw_text: str) -> AcceptanceSpec:
                               nonnegative=True)
                       if "max_energy_j" in validity_obj else None),
     )
+    near_threshold_fraction = (
+        _number(obj, "near_threshold_fraction", where, nonnegative=True)
+        if "near_threshold_fraction" in obj else 0.0)
+    if near_threshold_fraction > MAX_NEAR_THRESHOLD_FRACTION:
+        raise ScenarioError(
+            f"{where}.near_threshold_fraction must be <= "
+            f"{MAX_NEAR_THRESHOLD_FRACTION}, got {near_threshold_fraction!r}")
     return AcceptanceSpec(acceptance_id, checks, validity, raw_text,
-                          notes=notes, events=events)
+                          notes=notes, events=events,
+                          near_threshold_fraction=near_threshold_fraction)
 
 
 def _numbers(obj: dict, key: str, where: str, length: int, *,
@@ -931,13 +1091,26 @@ _CHECK_FIELDS = {
                            ("from_phase",)),
     "return_displacement": (("joint", "phase", "reference", "max", "units"), ()),
     "terminal_speed": (("joint", "phase", "max", "units"), ()),
-    "body_speed": (("body", "phase", "max", "units"), ()),
+    "body_speed": (("body", "phase", "max", "units"), ("window",)),
     "effort_bound": (("actuator", "max", "units"), ()),
     "contact_force_bound": (("body_a", "body_b", "max", "units"), ()),
     "penetration_bound": (("max", "units"), ()),
     "event_count": (("event", "expected", "tolerance", "units"), ()),
     "event_verdict": (("event", "units"), ()),
+    "relative_pose": (("body_a", "body_b", "phase", "max", "max_rotation_rad"),
+                      ("window", "units")),
+    "relative_translation": (("body_a", "body_b", "from_phase", "to_phase", "axis",
+                              "lower", "upper"),
+                             ("frame", "window", "units")),
+    "contact_duration": (("body_a", "body_b", "force_threshold_n", "max"),
+                         ("window", "units")),
 }
+
+
+def _window(item, where: str) -> str:
+    if "window" not in item:
+        return "end"
+    return _string(item, "window", where, choices=CHECK_WINDOWS)
 
 
 def _load_check(item, index: int) -> CheckSpec:
@@ -982,6 +1155,7 @@ def _load_check(item, index: int) -> CheckSpec:
             body=text("body"), phase=text("phase"),
             maximum=_number(item, "max", where, nonnegative=True),
             units=_string(item, "units", where, choices=("m/s",)),
+            window=_window(item, where),
         )
     elif kind == "effort_bound":
         units = _string(item, "units", where)
@@ -1015,6 +1189,60 @@ def _load_check(item, index: int) -> CheckSpec:
         if units != "state":
             raise ScenarioError(f"{where}.units must be 'state', got {units!r}")
         kwargs.update(event=text("event"), units=units)
+    elif kind == "relative_pose":
+        body_a, body_b = text("body_a"), text("body_b")
+        if body_a == body_b:
+            raise ScenarioError(f"{where}: body_a and body_b must differ")
+        kwargs.update(
+            body_a=body_a, body_b=body_b, phase=text("phase"),
+            maximum=_number(item, "max", where, nonnegative=True),
+            max_rotation_rad=_number(item, "max_rotation_rad", where,
+                                     nonnegative=True),
+            window=_window(item, where),
+            units=(_string(item, "units", where, choices=("m",))
+                   if "units" in item else "m"),
+        )
+    elif kind == "relative_translation":
+        body_a, body_b = text("body_a"), text("body_b")
+        if body_a == body_b:
+            raise ScenarioError(f"{where}: body_a and body_b must differ")
+        axis = _string(item, "axis", where, choices=("x", "y", "z"))
+        frame = (_string(item, "frame", where, choices=("body_a", "world"))
+                 if "frame" in item else "body_a")
+        if frame == "world" and axis != "z":
+            raise ScenarioError(
+                f"{where}: frame='world' is only defined for axis='z' (the signed gravity "
+                f"drop), got axis={axis!r}")
+        lower = _number(item, "lower", where)
+        upper = _number(item, "upper", where)
+        if lower > upper:
+            raise ScenarioError(
+                f"{where}: lower {lower!r} must not exceed upper {upper!r}")
+        kwargs.update(
+            body_a=body_a, body_b=body_b,
+            from_phase=text("from_phase"), to_phase=text("to_phase"),
+            axis=axis, frame=frame, lower=lower, upper=upper,
+            window=_window(item, where),
+            units=(_string(item, "units", where, choices=("m",))
+                   if "units" in item else "m"),
+        )
+    elif kind == "contact_duration":
+        body_a, body_b = text("body_a"), text("body_b")
+        if body_a == body_b:
+            raise ScenarioError(f"{where}: body_a and body_b must differ")
+        window = _window(item, where)
+        if window != "end":
+            raise ScenarioError(
+                f"{where}: contact_duration measures the whole run at integration-step "
+                f"resolution; window={window!r} is not defined for it")
+        kwargs.update(
+            body_a=body_a, body_b=body_b,
+            force_threshold_n=_number(item, "force_threshold_n", where, nonnegative=True),
+            maximum=_number(item, "max", where, nonnegative=True),
+            window=window,
+            units=(_string(item, "units", where, choices=("s",))
+                   if "units" in item else "s"),
+        )
     else:  # penetration_bound
         kwargs.update(
             maximum=_number(item, "max", where, positive=True),

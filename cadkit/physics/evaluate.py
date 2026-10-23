@@ -26,6 +26,7 @@ import numpy as np
 from . import Status
 from .scenario import AcceptanceSpec, CheckSpec, ScenarioError, ScenarioSpec
 from .schema import AssemblySpec
+from .telemetry import pose_delta, relative_transform
 
 
 @dataclass
@@ -39,14 +40,20 @@ class CheckOutcome:
     units: str
     stage: str = "evaluate"
     time_s: float | None = None
+    #: Structured measurement evidence for the bound relative checks. ``None`` for the
+    #: earlier kinds, whose serialized form must stay byte-identical.
+    evidence: dict | None = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "name": self.name, "kind": self.kind, "status": self.status,
             "ok": self.ok, "detail": self.detail,
             "value": self.value if self.value is None or math.isfinite(self.value) else None,
             "units": self.units, "stage": self.stage, "time_s": self.time_s,
         }
+        if self.evidence is not None:
+            out["evidence"] = self.evidence
+        return out
 
 
 @dataclass
@@ -67,6 +74,7 @@ class Evaluation:
 
 _JOINT_UNITS = {"slide": ("m", "m/s"), "hinge": ("rad", "rad/s")}
 _EFFORT_UNITS = {"slide": {"N"}, "hinge": {"N m", "Nm", "N.m"}}
+_AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 
 
 def resolve_references(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
@@ -81,6 +89,10 @@ def resolve_references(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
     phases = {p.name for p in scenario.phases} | {"initial"}
     for check in acceptance.checks:
         where = f"acceptance check {check.name!r}"
+        try:
+            check.validate_semantics()
+        except ValueError as exc:
+            raise ScenarioError(f"{where}: {exc}") from exc
         if check.kind == "body_speed":
             if check.body not in bodies:
                 raise ScenarioError(f"{where}: unknown body {check.body!r}")
@@ -107,12 +119,47 @@ def resolve_references(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
             for body in (check.body_a, check.body_b):
                 if body not in bodies:
                     raise ScenarioError(f"{where}: unknown body {body!r}")
+        if check.kind in ("relative_pose", "relative_translation", "contact_duration"):
+            for body in (check.body_a, check.body_b):
+                if body not in bodies:
+                    raise ScenarioError(f"{where}: unknown body {body!r}")
         for phase in (check.phase, check.from_phase, check.to_phase):
             if phase is not None and phase not in phases:
                 raise ScenarioError(f"{where}: unknown phase {phase!r}")
     event_specs = {event.name: event for event in acceptance.events}
     phase_specs = {phase.name: phase for phase in scenario.phases}
     phase_order = {phase.name: index for index, phase in enumerate(scenario.phases)}
+    for check in acceptance.checks:
+        where = f"acceptance check {check.name!r}"
+        if check.kind == "relative_pose":
+            if check.phase == "initial" or phase_specs[check.phase].is_reset:
+                raise ScenarioError(
+                    f"{where}: phase must name a timed scenario phase, got "
+                    f"{check.phase!r}")
+        if check.kind == "relative_translation":
+            if check.to_phase == "initial" or phase_specs[check.to_phase].is_reset:
+                raise ScenarioError(
+                    f"{where}: to_phase must name a timed scenario phase, got "
+                    f"{check.to_phase!r}")
+            if check.from_phase == "initial":
+                start = -1
+            else:
+                if phase_specs[check.from_phase].is_reset:
+                    raise ScenarioError(
+                        f"{where}: from_phase must be 'initial' or a timed phase, got "
+                        f"{check.from_phase!r}")
+                start = phase_order[check.from_phase]
+            if start >= phase_order[check.to_phase]:
+                raise ScenarioError(
+                    f"{where}: from_phase {check.from_phase!r} must precede to_phase "
+                    f"{check.to_phase!r}")
+        if check.kind == "body_speed" and check.window == "max_over_phase":
+            # The reset state takes no steps, so a max-over-phase speed watch there has no
+            # duration evidence. Reject it rather than producing a zero-sample verdict.
+            if check.phase == "initial" or phase_specs[check.phase].is_reset:
+                raise ScenarioError(
+                    f"{where}: body_speed with window='max_over_phase' needs a timed "
+                    f"scenario phase, got {check.phase!r}")
     for event in acceptance.events:
         where = f"acceptance event {event.name!r}"
         for body in event.bodies:
@@ -265,16 +312,97 @@ def _boundary(telemetry, name: str):
 
 
 def _outcome(check: CheckSpec, *, ok: bool | None, status: Status, detail: str,
-             value: float | None, time_s: float | None = None) -> CheckOutcome:
+             value: float | None, time_s: float | None = None,
+             evidence: dict | None = None, units: str | None = None) -> CheckOutcome:
+    report_units = units or check.units
     if value is not None and not math.isfinite(value):
         return CheckOutcome(check.name, check.kind, "INCONCLUSIVE", None,
-                            f"{detail}; measured value is not finite", None, check.units,
-                            "evaluate", time_s)
-    return CheckOutcome(check.name, check.kind, status, ok, detail, value, check.units,
-                        "evaluate", time_s)
+                            f"{detail}; measured value is not finite", None, report_units,
+                            "evaluate", time_s, evidence)
+    return CheckOutcome(check.name, check.kind, status, ok, detail, value, report_units,
+                        "evaluate", time_s, evidence)
 
 
-def _evaluate_check(check: CheckSpec, telemetry) -> CheckOutcome:
+def _near_upper(value: float, bound: float | None, fraction: float) -> bool:
+    """A passing value within ``fraction`` of an upper bound is inconclusive.
+
+    The band width is ``fraction * abs(bound)``, so a negative upper bound behaves
+    symmetrically. A zero bound has no relative scale and therefore no band.
+    """
+    if fraction <= 0.0 or bound is None or bound == 0.0:
+        return False
+    return value <= bound and (bound - value) <= fraction * abs(bound)
+
+
+def _near_lower(value: float, bound: float | None, fraction: float) -> bool:
+    """A passing value within ``fraction`` of a signed lower bound is inconclusive.
+
+    The band width is ``fraction * abs(bound)``. A zero bound has no relative scale, so its
+    band width is zero: an exact zero is not reported as near-threshold.
+    """
+    if fraction <= 0.0 or bound is None or bound == 0.0:
+        return False
+    return value >= bound and (value - bound) <= fraction * abs(bound)
+
+
+def _snapshot_relative(snapshot, body_a: str, body_b: str):
+    try:
+        entry_a = snapshot.bodies[body_a]
+        entry_b = snapshot.bodies[body_b]
+    except KeyError as exc:
+        raise KeyError(f"boundary state has no body telemetry for {exc.args[0]!r}") from exc
+    return relative_transform(entry_a["xpos"], entry_a["xquat"],
+                              entry_b["xpos"], entry_b["xquat"])
+
+
+def _phase_record(telemetry, name: str):
+    for phase in telemetry.phases:
+        if phase.name == name:
+            return phase
+    return None
+
+
+def _coverage_reason(telemetry, phase_name: str, samples: int) -> str | None:
+    """Reject a phase-scoped watch that did not see every integration state of the phase."""
+    phase = _phase_record(telemetry, phase_name)
+    if phase is None:
+        return f"no recorded phase {phase_name!r} for the watch"
+    if int(samples) <= 0:
+        return f"the watch for phase {phase_name!r} recorded no integration state"
+    if not phase.complete:
+        return f"phase {phase_name!r} did not complete; every-step evidence is partial"
+    if int(phase.actual_steps) != int(samples):
+        return (f"phase {phase_name!r} took {phase.actual_steps} steps but the watch saw "
+                f"{samples} integration states")
+    return None
+
+
+def _contact_coverage_reason(telemetry, samples: int) -> str | None:
+    """A whole-run duration needs one state per integration step plus the reset state."""
+    if not telemetry.phases:
+        return "no recorded phases; the run has no duration evidence"
+    incomplete = [phase.name for phase in telemetry.phases if not phase.complete]
+    if incomplete:
+        return f"phase(s) {incomplete} did not complete; duration evidence is partial"
+    expected = 1 + sum(int(phase.actual_steps) for phase in telemetry.phases)
+    if int(samples) != expected:
+        return (f"duration watch saw {samples} integration states, expected {expected} "
+                f"from the recorded phases")
+    return None
+
+
+def _signed_worst(lower_value: float, upper_value: float, lower: float,
+                  upper: float) -> tuple[float, str]:
+    """The passing sample closest to either bound, by bound-relative distance."""
+    low_margin = (lower_value - lower) / abs(lower) if lower != 0.0 else lower_value - lower
+    up_margin = (upper - upper_value) / abs(upper) if upper != 0.0 else upper - upper_value
+    if low_margin <= up_margin:
+        return lower_value, "lower"
+    return upper_value, "upper"
+
+
+def _evaluate_check(check: CheckSpec, telemetry, near_threshold_fraction: float = 0.0
+                    ) -> CheckOutcome:
     if check.kind == "joint_displacement":
         start, reason = _boundary(telemetry, check.from_phase or "initial")
         if reason:
@@ -320,7 +448,7 @@ def _evaluate_check(check: CheckSpec, telemetry) -> CheckOutcome:
                     f"bound {check.maximum:.9g} {check.units}"),
             value=value, time_s=snap.time_s)
 
-    if check.kind == "body_speed":
+    if check.kind == "body_speed" and check.window == "end":
         snap, reason = _boundary(telemetry, check.phase)
         if reason:
             return _outcome(check, ok=None, status="INCONCLUSIVE",
@@ -425,6 +553,300 @@ def _evaluate_check(check: CheckSpec, telemetry) -> CheckOutcome:
             detail=f"event {check.event!r}: {result.verdict_code} - {result.detail}",
             value=None)
 
+    if check.kind == "relative_pose":
+        initial = telemetry.boundaries.get("initial")
+        if initial is None:
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail="no recorded initial boundary; the relative pose has no reference",
+                value=None)
+        try:
+            p_ref, r_ref = _snapshot_relative(initial, check.body_a, check.body_b)
+        except KeyError as exc:
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail=f"missing body telemetry for {exc.args[0]}", value=None)
+        if check.window == "max_over_phase":
+            evidence = getattr(telemetry, "watch_evidence", {}).get(check.name)
+            if evidence is None:
+                return _outcome(
+                    check, ok=None, status="INCONCLUSIVE",
+                    detail=(f"no every-step pose watch for phase {check.phase!r}; the "
+                            f"max-over-phase bound has no evidence"),
+                    value=None)
+            reason = _coverage_reason(telemetry, check.phase, evidence["samples"])
+            if reason:
+                return _outcome(check, ok=None, status="INCONCLUSIVE", detail=reason,
+                                value=None)
+            required = ("translation_m", "translation_time_s", "rotation_rad",
+                        "rotation_time_s", "end_translation_m", "end_rotation_rad",
+                        "end_time_s")
+            if any(evidence.get(key) is None for key in required):
+                return _outcome(
+                    check, ok=None, status="INCONCLUSIVE",
+                    detail=f"the pose watch for phase {check.phase!r} has incomplete evidence",
+                    value=None)
+            translation = float(evidence["translation_m"])
+            rotation = float(evidence["rotation_rad"])
+            time_translation = evidence["translation_time_s"]
+            time_rotation = evidence["rotation_time_s"]
+            end_translation = evidence["end_translation_m"]
+            end_rotation = evidence["end_rotation_rad"]
+            end_time = evidence["end_time_s"]
+            samples = int(evidence["samples"])
+        else:
+            snapshot, reason = _boundary(telemetry, check.phase)
+            if reason:
+                return _outcome(check, ok=None, status="INCONCLUSIVE",
+                                detail=reason["reason"], value=None)
+            try:
+                p_end, r_end = _snapshot_relative(snapshot, check.body_a, check.body_b)
+            except KeyError as exc:
+                return _outcome(
+                    check, ok=None, status="INCONCLUSIVE",
+                    detail=f"missing body telemetry for {exc.args[0]}", value=None)
+            delta_p, rotation = pose_delta(p_ref, r_ref, p_end, r_end)
+            translation = float(np.linalg.norm(delta_p))
+            time_translation = time_rotation = snapshot.time_s
+            end_translation, end_rotation, end_time = translation, rotation, snapshot.time_s
+            samples = 1
+        near_translation = _near_upper(translation, check.maximum, near_threshold_fraction)
+        near_rotation = _near_upper(rotation, check.max_rotation_rad,
+                                    near_threshold_fraction)
+        evidence = {
+            "kind": check.kind, "window": check.window, "phase": check.phase,
+            "translation_m": translation, "translation_time_s": time_translation,
+            "rotation_rad": rotation, "rotation_time_s": time_rotation,
+            "end_translation_m": end_translation, "end_rotation_rad": end_rotation,
+            "end_time_s": end_time,
+            "bound_translation_m": check.maximum,
+            "bound_rotation_rad": check.max_rotation_rad,
+            "samples": samples,
+            "near_threshold_fraction": near_threshold_fraction,
+            "translation_near_threshold": near_translation,
+            "rotation_near_threshold": near_rotation,
+        }
+        detail = (
+            f"attached-local relative pose over {check.window} of {check.phase!r}: "
+            f"translation {translation:.9g} m (bound {check.maximum:.9g} m), "
+            f"rotation {rotation:.9g} rad (bound {check.max_rotation_rad:.9g} rad); "
+            f"terminal {end_translation:.9g} m / {end_rotation:.9g} rad")
+        if translation > check.maximum:
+            return _outcome(check, ok=False, status="FAIL", detail=detail,
+                            value=translation, time_s=time_translation, evidence=evidence)
+        if rotation > check.max_rotation_rad:
+            return _outcome(check, ok=False, status="FAIL", detail=detail,
+                            value=rotation, time_s=time_rotation, evidence=evidence,
+                            units="rad")
+        if near_translation or near_rotation:
+            band = " and ".join(name for name, flag in
+                                (("translation", near_translation),
+                                 ("rotation", near_rotation)) if flag)
+            report_rotation = near_rotation and not near_translation
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail=(f"{detail}; within the {near_threshold_fraction:.3g} near-threshold "
+                        f"band of the {band} bound"),
+                value=rotation if report_rotation else translation,
+                time_s=time_rotation if report_rotation else time_translation,
+                evidence=evidence, units="rad" if report_rotation else None)
+        return _outcome(check, ok=True, status="PASS", detail=detail, value=translation,
+                        time_s=time_translation, evidence=evidence)
+
+    if check.kind == "relative_translation":
+        reference_name = check.from_phase
+        reference, reason = _boundary(telemetry, reference_name)
+        if reason:
+            return _outcome(check, ok=None, status="INCONCLUSIVE",
+                            detail=reason["reason"], value=None)
+        if check.window == "max_over_phase":
+            evidence = getattr(telemetry, "watch_evidence", {}).get(check.name)
+            if evidence is None:
+                return _outcome(
+                    check, ok=None, status="INCONCLUSIVE",
+                    detail=(f"no every-step translation watch for phase {check.to_phase!r}; "
+                            f"the max-over-phase bound has no evidence"),
+                    value=None)
+            reason = _coverage_reason(telemetry, check.to_phase, evidence["samples"])
+            if reason:
+                return _outcome(check, ok=None, status="INCONCLUSIVE", detail=reason,
+                                value=None)
+            required = ("min_m", "min_time_s", "max_m", "max_time_s", "terminal_m",
+                        "terminal_time_s")
+            if any(evidence.get(key) is None for key in required):
+                return _outcome(
+                    check, ok=None, status="INCONCLUSIVE",
+                    detail=(f"the translation watch for phase {check.to_phase!r} has "
+                            f"incomplete evidence"),
+                    value=None)
+            lower_value = float(evidence["min_m"])
+            upper_value = float(evidence["max_m"])
+            time_lower = evidence["min_time_s"]
+            time_upper = evidence["max_time_s"]
+            terminal = evidence["terminal_m"]
+            terminal_time = evidence["terminal_time_s"]
+            samples = int(evidence["samples"])
+        else:
+            end_snapshot, reason = _boundary(telemetry, check.to_phase)
+            if reason:
+                return _outcome(check, ok=None, status="INCONCLUSIVE",
+                                detail=reason["reason"], value=None)
+            try:
+                p_from, _ = _snapshot_relative(reference, check.body_a, check.body_b)
+                p_to, _ = _snapshot_relative(end_snapshot, check.body_a, check.body_b)
+            except KeyError as exc:
+                return _outcome(
+                    check, ok=None, status="INCONCLUSIVE",
+                    detail=f"missing body telemetry for {exc.args[0]}", value=None)
+            if check.frame == "world":
+                p_from = (np.asarray(reference.bodies[check.body_b]["xpos"],
+                                     dtype=np.float64)
+                          - np.asarray(reference.bodies[check.body_a]["xpos"],
+                                       dtype=np.float64))
+                p_to = (np.asarray(end_snapshot.bodies[check.body_b]["xpos"],
+                                   dtype=np.float64)
+                        - np.asarray(end_snapshot.bodies[check.body_a]["xpos"],
+                                     dtype=np.float64))
+            signed = float((p_to - p_from)[_AXIS_INDEX[check.axis]])
+            lower_value = upper_value = terminal = signed
+            time_lower = time_upper = terminal_time = end_snapshot.time_s
+            samples = 1
+        evidence = {
+            "kind": check.kind, "window": check.window,
+            "frame": check.frame or "body_a", "axis": check.axis,
+            "from_phase": check.from_phase, "to_phase": check.to_phase,
+            "min_m": lower_value, "min_time_s": time_lower,
+            "max_m": upper_value, "max_time_s": time_upper,
+            "terminal_m": terminal, "terminal_time_s": terminal_time,
+            "lower_m": check.lower, "upper_m": check.upper,
+            "drop_m": None,
+            "samples": samples,
+            "near_threshold_fraction": near_threshold_fraction,
+        }
+        world_z = (check.frame or "body_a") == "world" and check.axis == "z"
+
+        def drop_suffix(value: float) -> str:
+            if not world_z:
+                return ""
+            return f"; positive downward drop {max(0.0, -value):.9g} m"
+
+        near_lower = _near_lower(lower_value, check.lower, near_threshold_fraction)
+        near_upper = _near_upper(upper_value, check.upper, near_threshold_fraction)
+        evidence["near_lower"] = near_lower
+        evidence["near_upper"] = near_upper
+        if lower_value < check.lower:
+            value, time_s = lower_value, time_lower
+            if world_z:
+                evidence["drop_m"] = max(0.0, -value)
+            detail = (f"signed {check.frame or 'body_a'} {check.axis} displacement "
+                      f"{lower_value:.9g} m below the lower bound {check.lower:.9g} m "
+                      f"(worst over {check.window} of {check.to_phase!r})"
+                      f"{drop_suffix(value)}")
+            return _outcome(check, ok=False, status="FAIL", detail=detail, value=value,
+                            time_s=time_s, evidence=evidence)
+        if upper_value > check.upper:
+            value, time_s = upper_value, time_upper
+            if world_z:
+                evidence["drop_m"] = max(0.0, -value)
+            detail = (f"signed {check.frame or 'body_a'} {check.axis} displacement "
+                      f"{upper_value:.9g} m above the upper bound {check.upper:.9g} m "
+                      f"(worst over {check.window} of {check.to_phase!r})"
+                      f"{drop_suffix(value)}")
+            return _outcome(check, ok=False, status="FAIL", detail=detail, value=value,
+                            time_s=time_s, evidence=evidence)
+        worst, _side = _signed_worst(lower_value, upper_value, check.lower, check.upper)
+        worst_time = time_lower if _side == "lower" else time_upper
+        if world_z:
+            evidence["drop_m"] = max(0.0, -worst)
+        detail = (f"signed {check.frame or 'body_a'} {check.axis} displacement "
+                  f"{worst:.9g} m within [{check.lower:.9g}, {check.upper:.9g}] m "
+                  f"(worst over {check.window} of {check.to_phase!r}); terminal "
+                  f"{terminal:.9g} m{drop_suffix(worst)}")
+        if near_lower or near_upper:
+            band = " and ".join(name for name, flag in
+                                (("lower", near_lower), ("upper", near_upper)) if flag)
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail=(f"{detail}; within the {near_threshold_fraction:.3g} near-threshold "
+                        f"band of the {band} bound"),
+                value=worst, time_s=worst_time, evidence=evidence)
+        return _outcome(check, ok=True, status="PASS", detail=detail, value=worst,
+                        time_s=worst_time, evidence=evidence)
+
+    if check.kind == "contact_duration":
+        evidence = getattr(telemetry, "watch_evidence", {}).get(check.name)
+        if evidence is None:
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail=(f"no every-step summed-force watch for {check.body_a!r}/"
+                        f"{check.body_b!r}; a zero duration would be fabricated"),
+                value=None)
+        reason = _contact_coverage_reason(telemetry, evidence["samples"])
+        if reason:
+            return _outcome(check, ok=None, status="INCONCLUSIVE", detail=reason, value=None)
+        value = float(evidence["longest_s"])
+        ok = value <= check.maximum
+        near = _near_upper(value, check.maximum, near_threshold_fraction)
+        evidence = dict(evidence)
+        evidence["bound_s"] = check.maximum
+        evidence["near_threshold_fraction"] = near_threshold_fraction
+        evidence["near_threshold"] = near
+        detail = (f"longest uninterrupted run above the summed normal-force threshold "
+                  f"{check.force_threshold_n:.9g} N on {check.body_a!r}/{check.body_b!r} is "
+                  f"{value:.9g} s ({evidence['run_samples']} integration states from "
+                  f"{evidence['start_s']} s to {evidence['end_s']} s, "
+                  f"{evidence['samples_above']} above of {evidence['samples']} states); "
+                  f"bound {check.maximum:.9g} s")
+        if not ok:
+            return _outcome(check, ok=False, status="FAIL", detail=detail,
+                            value=value, time_s=evidence["end_s"], evidence=evidence)
+        if near:
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail=(f"{detail}; within the {near_threshold_fraction:.3g} "
+                        f"near-threshold band"),
+                value=value, time_s=evidence["end_s"], evidence=evidence)
+        return _outcome(check, ok=True, status="PASS", detail=detail,
+                        value=value, time_s=evidence["end_s"], evidence=evidence)
+
+    if check.kind == "body_speed" and check.window == "max_over_phase":
+        evidence = getattr(telemetry, "watch_evidence", {}).get(check.name)
+        if evidence is None:
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail=(f"no every-step speed watch for {check.body!r} in "
+                        f"{check.phase!r}"),
+                value=None)
+        reason = _coverage_reason(telemetry, check.phase, evidence["samples"])
+        if reason:
+            return _outcome(check, ok=None, status="INCONCLUSIVE", detail=reason, value=None)
+        if evidence.get("time_s") is None or evidence.get("terminal_speed_m_s") is None:
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail=f"the speed watch for phase {check.phase!r} has incomplete evidence",
+                value=None)
+        value = float(evidence["speed_m_s"])
+        ok = value <= check.maximum
+        near = _near_upper(value, check.maximum, near_threshold_fraction)
+        evidence = dict(evidence)
+        evidence["bound_m_s"] = check.maximum
+        evidence["near_threshold_fraction"] = near_threshold_fraction
+        evidence["near_threshold"] = near
+        detail = (f"worst body speed {value:.9g} m/s over every step of {check.phase!r}; "
+                  f"bound {check.maximum:.9g} m/s; terminal "
+                  f"{evidence['terminal_speed_m_s']:.9g} m/s")
+        if not ok:
+            return _outcome(check, ok=False, status="FAIL", detail=detail, value=value,
+                            time_s=evidence["time_s"], evidence=evidence)
+        if near:
+            return _outcome(
+                check, ok=None, status="INCONCLUSIVE",
+                detail=(f"{detail}; within the {near_threshold_fraction:.3g} "
+                        f"near-threshold band"),
+                value=value, time_s=evidence["time_s"], evidence=evidence)
+        return _outcome(check, ok=True, status="PASS", detail=detail, value=value,
+                        time_s=evidence["time_s"], evidence=evidence)
+
     return _outcome(check, ok=None, status="INCONCLUSIVE",
                     detail=f"unsupported check kind {check.kind!r}", value=None)
 
@@ -432,7 +854,8 @@ def _evaluate_check(check: CheckSpec, telemetry) -> CheckOutcome:
 def evaluate(scenario: ScenarioSpec, acceptance: AcceptanceSpec, telemetry,
              *, compliance_reasons: list[dict] | None = None) -> Evaluation:
     """Evaluate every declared check plus numerical validity, with fixed precedence."""
-    outcomes = [_evaluate_check(check, telemetry) for check in acceptance.checks]
+    outcomes = [_evaluate_check(check, telemetry, acceptance.near_threshold_fraction)
+                for check in acceptance.checks]
     reasons: list[dict] = []
     reasons.extend(dict(r) for r in telemetry.invalid)
     for result in getattr(telemetry, "event_results", {}).values():

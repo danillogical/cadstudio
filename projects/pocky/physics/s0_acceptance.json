@@ -1,0 +1,125 @@
+{
+  "schema_version": "m4a-1",
+  "acceptance_id": "pocky_m5a1_s0",
+  "notes": "Frozen S0 acceptance for the M5a-1 no-packet scenarios, transcribed from docs/mujoco-m5a-plan.md sections 5.3-5.4 before the first S0 run. Body/chassis attached-local relative translation 0.20 mm and rotation 0.20 deg are 50% of the 0.40 mm gap and the predicted 0.4 deg arrest. The signed world-z drop bound is 25% of the 0.40 mm gap and fails downward and upward; the positive downward drop max(0,-dz) is reported separately. 0.0715 N is 5% of the 145.89 g hanging group and 0.20 s is the longest allowed sustained load. chassis/floor 1 mm and 0.20 deg bound the analytic floor contact. Body and lip speeds are <=1 mm/s at the worst hold sample. 0.2 mm peak penetration is the numerical validity bound, not a product tolerance: a breach makes the dynamics INCONCLUSIVE, never a physical FAIL. The 20% near-threshold band is enabled, so a passing value within 20% of a bound is INCONCLUSIVE. contact_duration is the accepted generic whole-run summed-normal-force metric at integration-step resolution; it takes window=end and has no phase fields, so its window is the whole run and not the hold phase.",
+  "near_threshold_fraction": 0.2,
+  "checks": [
+    {
+      "name": "body_pose_retained",
+      "kind": "relative_pose",
+      "body_a": "body",
+      "body_b": "chassis",
+      "phase": "hold",
+      "window": "max_over_phase",
+      "max": 0.0002,
+      "max_rotation_rad": 0.003490658503988659,
+      "units": "m"
+    },
+    {
+      "name": "body_drop",
+      "kind": "relative_translation",
+      "body_a": "chassis",
+      "body_b": "body",
+      "from_phase": "initial",
+      "to_phase": "hold",
+      "axis": "z",
+      "frame": "world",
+      "lower": -0.0001,
+      "upper": 0.0001,
+      "window": "max_over_phase",
+      "units": "m"
+    },
+    {
+      "name": "body_on_pusher",
+      "kind": "contact_duration",
+      "body_a": "body",
+      "body_b": "pusher",
+      "force_threshold_n": 0.0715,
+      "max": 0.2,
+      "units": "s"
+    },
+    {
+      "name": "body_on_rod",
+      "kind": "contact_duration",
+      "body_a": "body",
+      "body_b": "rod",
+      "force_threshold_n": 0.0715,
+      "max": 0.2,
+      "units": "s"
+    },
+    {
+      "name": "body_on_crank",
+      "kind": "contact_duration",
+      "body_a": "body",
+      "body_b": "crank",
+      "force_threshold_n": 0.0715,
+      "max": 0.2,
+      "units": "s"
+    },
+    {
+      "name": "lip_on_pusher",
+      "kind": "contact_duration",
+      "body_a": "lip",
+      "body_b": "pusher",
+      "force_threshold_n": 0.0715,
+      "max": 0.2,
+      "units": "s"
+    },
+    {
+      "name": "lip_on_rod",
+      "kind": "contact_duration",
+      "body_a": "lip",
+      "body_b": "rod",
+      "force_threshold_n": 0.0715,
+      "max": 0.2,
+      "units": "s"
+    },
+    {
+      "name": "lip_on_crank",
+      "kind": "contact_duration",
+      "body_a": "lip",
+      "body_b": "crank",
+      "force_threshold_n": 0.0715,
+      "max": 0.2,
+      "units": "s"
+    },
+    {
+      "name": "chassis_grounded",
+      "kind": "relative_pose",
+      "body_a": "chassis",
+      "body_b": "floor_world",
+      "phase": "hold",
+      "window": "max_over_phase",
+      "max": 0.001,
+      "max_rotation_rad": 0.003490658503988659,
+      "units": "m"
+    },
+    {
+      "name": "settled_body",
+      "kind": "body_speed",
+      "body": "body",
+      "phase": "hold",
+      "window": "max_over_phase",
+      "max": 0.001,
+      "units": "m/s"
+    },
+    {
+      "name": "settled_lip",
+      "kind": "body_speed",
+      "body": "lip",
+      "phase": "hold",
+      "window": "max_over_phase",
+      "max": 0.001,
+      "units": "m/s"
+    },
+    {
+      "name": "penetration",
+      "kind": "penetration_bound",
+      "max": 0.0002,
+      "units": "m"
+    }
+  ],
+  "validity": {
+    "max_penetration_m": 0.0002
+  }
+}

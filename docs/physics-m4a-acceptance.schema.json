@@ -10,6 +10,7 @@
     "schema_version": {"const": "m4a-1"},
     "acceptance_id": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
     "notes": {"type": "string"},
+    "near_threshold_fraction": {"type": "number", "minimum": 0, "maximum": 0.5},
     "validity": {
       "type": "object",
       "additionalProperties": false,
@@ -86,6 +87,7 @@
               "body": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
               "phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
               "max": {"type": "number", "minimum": 0},
+              "window": {"enum": ["end", "max_over_phase"]},
               "units": {"const": "m/s"}
             }
           },
@@ -147,6 +149,58 @@
               "kind": {"const": "event_verdict"},
               "event": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
               "units": {"const": "state"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "body_a", "body_b", "phase", "max",
+                         "max_rotation_rad"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "relative_pose"},
+              "body_a": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "body_b": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "max": {"type": "number", "minimum": 0},
+              "max_rotation_rad": {"type": "number", "minimum": 0},
+              "window": {"enum": ["end", "max_over_phase"]},
+              "units": {"const": "m"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "body_a", "body_b", "from_phase", "to_phase",
+                         "axis", "lower", "upper"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "relative_translation"},
+              "body_a": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "body_b": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "from_phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "to_phase": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "axis": {"enum": ["x", "y", "z"]},
+              "frame": {"enum": ["body_a", "world"]},
+              "lower": {"type": "number"},
+              "upper": {"type": "number"},
+              "window": {"enum": ["end", "max_over_phase"]},
+              "units": {"const": "m"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "body_a", "body_b", "force_threshold_n", "max"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "kind": {"const": "contact_duration"},
+              "body_a": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "body_b": {"type": "string", "pattern": "^(?!\\.)(?!.*__)[A-Za-z0-9_.-]{1,64}$"},
+              "force_threshold_n": {"type": "number", "minimum": 0},
+              "max": {"type": "number", "minimum": 0},
+              "window": {"const": "end"},
+              "units": {"const": "s"}
             }
           }
         ]

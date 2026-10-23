@@ -19,10 +19,34 @@ def _ghost_meshes(p):
     ]
 
 
+def _physics(model_name, p):
+    """Lazy physics assembly: only the printed ``prototype`` model has one."""
+    if model_name != "prototype":
+        return None
+    from .physics.assembly import prototype_assembly
+
+    return prototype_assembly(p)
+
+
+def _physics_with_options(model_name, p, options):
+    """Strict option path for ``cad physics run``; unsupported options are rejected."""
+    if model_name != "prototype":
+        return None
+    from .physics.assembly import prototype_assembly
+    from .physics.options import load_options
+
+    opts = load_options(options)
+    return prototype_assembly(
+        p, spring_stiffness_n_m=opts.spring_stiffness_n_m, timestep_s=opts.timestep_s,
+    )
+
+
 PROJECT = Project(
     name="pocky",
     params_path=DEFAULT_PARAMS_PATH,
     load_params=load_params,
     models=models,
     ghost_meshes=_ghost_meshes,
+    physics=_physics,
+    physics_with_options=_physics_with_options,
 )

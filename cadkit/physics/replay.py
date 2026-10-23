@@ -601,6 +601,7 @@ def _replay_steps(mujoco, model, verified: VerifiedRun, *, start_row: int,
         effort_units=effort_units,
         max_contact_rows=int(verified.scenario.budgets.max_trace_rows) * 16,
         events=verified.acceptance.events,
+        checks=verified.acceptance.checks,
         gravity_m_s2=tuple(float(v) for v in
                            verified.summary["solver"]["runtime_identity"]["gravity_m_s2"]))
     phase_names = [str(v) for v in state["phase_names"]]
@@ -779,8 +780,109 @@ def _compare_value(source, replayed, path: str, differences: list[str]) -> None:
         differences.append(f"{path}: {source!r} vs {replayed!r}")
 
 
+def _finite_number(value) -> float | None:
+    """The finite float value, or ``None`` for a non-numeric/overflowed/non-finite input.
+
+    ``1e999`` is legal JSON and parses to infinity without the ``parse_constant`` hook, and
+    ``float()`` of an enormous integer raises ``OverflowError``. Neither may enter tolerance
+    arithmetic, where ``inf > inf`` is false and would falsely reproduce a tampered record.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError, TypeError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _compare_watch_number(left, right, path: str, differences: list[str], *,
+                          time_like: bool, time_atol: float) -> None:
+    if left is None or right is None:
+        if left is not right:
+            differences.append(f"{path}: {left!r} vs {right!r}")
+        return
+    atol = REPLAY_TOLERANCES["metric_atol"]
+    if time_like:
+        # One sample interval is the permitted discretisation drift for a worst-sample time.
+        atol = max(atol, time_atol)
+    if isinstance(left, bool) or isinstance(right, bool):
+        if left != right:
+            differences.append(f"{path}: {left!r} vs {right!r}")
+        return
+    if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
+        if left != right:
+            differences.append(f"{path}: {left!r} vs {right!r}")
+        return
+    if isinstance(left, int) and isinstance(right, int):
+        if left != right:
+            differences.append(f"{path}: {left!r} vs {right!r}")
+        return
+    left_number = _finite_number(left)
+    right_number = _finite_number(right)
+    if left_number is None or right_number is None:
+        differences.append(
+            f"{path}: non-finite or unrepresentable evidence ({left!r} vs {right!r})")
+        return
+    if abs(left_number - right_number) > (atol
+                                          + REPLAY_TOLERANCES["metric_rtol"]
+                                          * abs(left_number)):
+        differences.append(f"{path}: {left!r} vs {right!r}")
+
+
+def _compare_watch_evidence(source, replayed, path: str, differences: list[str],
+                            *, time_like: bool, time_atol: float) -> None:
+    if isinstance(source, dict) or isinstance(replayed, dict):
+        if not isinstance(source, dict) or not isinstance(replayed, dict):
+            differences.append(f"{path}: type differs")
+            return
+        if set(source) != set(replayed):
+            differences.append(f"{path}: key set differs")
+        for key in sorted(set(source) & set(replayed)):
+            _compare_watch_evidence(source[key], replayed[key], f"{path}.{key}",
+                                    differences,
+                                    time_like=str(key).endswith("_time_s"),
+                                    time_atol=time_atol)
+        return
+    if isinstance(source, (list, tuple)) or isinstance(replayed, (list, tuple)):
+        if not isinstance(source, (list, tuple)) or not isinstance(replayed, (list, tuple)):
+            differences.append(f"{path}: sequence type differs")
+            return
+        if len(source) != len(replayed):
+            differences.append(f"{path}: length {len(source)} vs {len(replayed)}")
+            return
+        for index, (left, right) in enumerate(zip(source, replayed)):
+            _compare_watch_evidence(left, right, f"{path}[{index}]", differences,
+                                    time_like=time_like, time_atol=time_atol)
+        return
+    _compare_watch_number(source, replayed, path, differences, time_like=time_like,
+                          time_atol=time_atol)
+
+
+def _compare_watch_check(source: dict, replayed: dict, path: str,
+                         differences: list[str], *, sample_interval_s: float) -> None:
+    """Compare a bound relative/speed check by its numbers and evidence, not its prose.
+
+    Values use the declared metric tolerance. Worst-sample times use one sample interval, as
+    the S0 replay contract requires. ``detail`` is a human rendering and is not the gate.
+    """
+    for key in ("name", "kind", "units", "stage", "status", "ok"):
+        if source.get(key) != replayed.get(key):
+            differences.append(f"{path}.{key}: {source.get(key)!r} vs "
+                               f"{replayed.get(key)!r}")
+    time_atol = max(float(sample_interval_s), REPLAY_TOLERANCES["metric_atol"])
+    _compare_watch_number(source.get("value"), replayed.get("value"), f"{path}.value",
+                          differences, time_like=False, time_atol=time_atol)
+    _compare_watch_number(source.get("time_s"), replayed.get("time_s"), f"{path}.time_s",
+                          differences, time_like=True, time_atol=time_atol)
+    _compare_watch_evidence(source.get("evidence"), replayed.get("evidence"),
+                            f"{path}.evidence", differences, time_like=False,
+                            time_atol=time_atol)
+
+
 def _compare_evaluations(source: dict, replayed_status: str, checks: list[dict],
-                         metrics: dict, validity: dict | None = None) -> dict:
+                         metrics: dict, validity: dict | None = None,
+                         *, sample_interval_s: float = 0.0) -> dict:
     """Strict recursive comparison of status, checks, metrics and validity evidence."""
     differences: list[str] = []
     if replayed_status != source["status"]:
@@ -792,8 +894,13 @@ def _compare_evaluations(source: dict, replayed_status: str, checks: list[dict],
             f"check set differs (missing {sorted(set(source_checks) - set(replay_checks))}, "
             f"extra {sorted(set(replay_checks) - set(source_checks))})")
     for name in sorted(set(source_checks) & set(replay_checks)):
-        _compare_value(source_checks[name], replay_checks[name], f"check[{name}]",
-                       differences)
+        left, right = source_checks[name], replay_checks[name]
+        if isinstance(left.get("evidence"), dict) and isinstance(right.get("evidence"),
+                                                                 dict):
+            _compare_watch_check(left, right, f"check[{name}]", differences,
+                                 sample_interval_s=sample_interval_s)
+        else:
+            _compare_value(left, right, f"check[{name}]", differences)
     _compare_value(source.get("metrics", {}), metrics, "metrics", differences)
     if validity is not None:
         _compare_value(source.get("validity", {}), validity, "validity", differences)
@@ -978,11 +1085,20 @@ def replay_run(run_dir: Path, out_dir: Path) -> dict:
                                   compliance_reasons=_compliance_reasons(mujoco, model,
                                                                          source.summary))
             replayed_status = evaluation.status
+        # The worst-sample time tolerance comes from the verified compiled model, never from
+        # the mutable summary plan: a tampered infinite/huge plan timestep would otherwise
+        # widen the tolerance without bound and falsely reproduce tampered times.
+        sample_interval_s = float(model.opt.timestep)
+        if not (math.isfinite(sample_interval_s) and sample_interval_s > 0.0):
+            raise ReplayError(
+                f"verified replay sample interval {sample_interval_s!r} is not finite and "
+                f"positive")
         eval_cmp = _compare_evaluations(source.summary, replayed_status or "ERROR",
                                         [c.to_dict() for c in (evaluation.checks
                                                                if evaluation else [])],
                                         evaluation.metrics if evaluation else {},
-                                        evaluation.validity if evaluation else None)
+                                        evaluation.validity if evaluation else None,
+                                        sample_interval_s=sample_interval_s)
         replayed_events = ([result.to_dict()
                             for result in full["telemetry"].event_results.values()]
                            if full["telemetry"] is not None else [])

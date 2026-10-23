@@ -61,6 +61,91 @@ def state_hash(*arrays: np.ndarray) -> str:
     return digest.hexdigest()
 
 
+# --------------------------------------------------------------- relative motion math
+def quat_to_matrix(quat_wxyz) -> np.ndarray:
+    """Body-to-world rotation matrix from a MuJoCo ``(w, x, y, z)`` quaternion."""
+    w, x, y, z = (float(v) for v in quat_wxyz)
+    norm_sq = w * w + x * x + y * y + z * z
+    if not (math.isfinite(norm_sq) and norm_sq > 0.0):
+        raise ValueError(f"quaternion {quat_wxyz!r} is not normalizable")
+    s = 2.0 / norm_sq
+    return np.asarray([
+        [1.0 - s * (y * y + z * z), s * (x * y - w * z), s * (x * z + w * y)],
+        [s * (x * y + w * z), 1.0 - s * (x * x + z * z), s * (y * z - w * x)],
+        [s * (x * z - w * y), s * (y * z + w * x), 1.0 - s * (x * x + y * y)],
+    ], dtype=np.float64)
+
+
+def matrix_to_quaternion(matrix) -> tuple[float, float, float, float]:
+    """Unit ``(w, x, y, z)`` quaternion of a rotation matrix, robust near 180 degrees."""
+    m = np.asarray(matrix, dtype=np.float64).reshape(3, 3)
+    trace = float(m[0, 0] + m[1, 1] + m[2, 2])
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (m[2, 1] - m[1, 2]) / s
+        y = (m[0, 2] - m[2, 0]) / s
+        z = (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = math.sqrt(max(0.0, 1.0 + m[0, 0] - m[1, 1] - m[2, 2])) * 2.0
+        w = (m[2, 1] - m[1, 2]) / s
+        x = 0.25 * s
+        y = (m[0, 1] + m[1, 0]) / s
+        z = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = math.sqrt(max(0.0, 1.0 + m[1, 1] - m[0, 0] - m[2, 2])) * 2.0
+        w = (m[0, 2] - m[2, 0]) / s
+        x = (m[0, 1] + m[1, 0]) / s
+        y = 0.25 * s
+        z = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = math.sqrt(max(0.0, 1.0 + m[2, 2] - m[0, 0] - m[1, 1])) * 2.0
+        w = (m[1, 0] - m[0, 1]) / s
+        x = (m[0, 2] + m[2, 0]) / s
+        y = (m[1, 2] + m[2, 1]) / s
+        z = 0.25 * s
+    norm = math.sqrt(w * w + x * x + y * y + z * z)
+    if not (math.isfinite(norm) and norm > 0.0):
+        raise ValueError("rotation matrix did not produce a finite quaternion")
+    return (w / norm, x / norm, y / norm, z / norm)
+
+
+def relative_transform(pos_a, quat_a, pos_b, quat_b) -> tuple[np.ndarray, np.ndarray]:
+    """``inverse(T_a) . T_b`` for body-to-world poses.
+
+    ``p_rel = R_a^T (p_b - p_a)`` is the position of body b in body a's **current** attached
+    local axes, and ``R_rel = R_a^T R_b`` the relative orientation. Both bodies undergoing the
+    same rigid motion leaves both quantities constant; freezing the initial axes and
+    subtracting world separations does not.
+    """
+    rotation_a = quat_to_matrix(quat_a)
+    p_rel = rotation_a.T @ (np.asarray(pos_b, dtype=np.float64)
+                            - np.asarray(pos_a, dtype=np.float64))
+    rotation_rel = rotation_a.T @ quat_to_matrix(quat_b)
+    if not (np.all(np.isfinite(p_rel)) and np.all(np.isfinite(rotation_rel))):
+        raise ValueError("relative transform is not finite")
+    return p_rel, rotation_rel
+
+
+def rotation_angle_rad(rotation) -> float:
+    """Angle of a rotation matrix: ``2 acos(clamp(|w|, 0, 1))``."""
+    w = matrix_to_quaternion(rotation)[0]
+    return 2.0 * math.acos(min(1.0, max(0.0, abs(w))))
+
+
+def pose_delta(p_rel_0, rotation_rel_0, p_rel_1, rotation_rel_1
+               ) -> tuple[np.ndarray, float]:
+    """Change of the attached-local relative pose: ``Δp`` and the angle of ``ΔR``."""
+    delta_p = (np.asarray(p_rel_1, dtype=np.float64)
+               - np.asarray(p_rel_0, dtype=np.float64))
+    delta_rotation = np.asarray(rotation_rel_1, dtype=np.float64) @ np.asarray(
+        rotation_rel_0, dtype=np.float64).T
+    return delta_p, rotation_angle_rad(delta_rotation)
+
+
+_AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+
+
 @dataclass(frozen=True)
 class Snapshot:
     time_s: float
@@ -140,6 +225,10 @@ class Telemetry:
     effort_tracking_error: dict[str, float] = field(default_factory=dict)
     contact_pairs: dict[tuple, dict] = field(default_factory=dict)
     event_results: dict[str, object] = field(default_factory=dict)
+    #: Every-step evidence for bound relative-pose/translation, max-over-phase speed, and
+    #: whole-run summed contact-duration watches, keyed by check name. Empty unless the
+    #: acceptance declares those kinds; older runs therefore serialize identically.
+    watch_evidence: dict[str, dict] = field(default_factory=dict)
     commanded_actuators: set[str] = field(default_factory=set)
     initial_penetration_m: float = 0.0
     initial_contact_force_n: float = 0.0
@@ -192,7 +281,8 @@ class TelemetryRecorder:
                  effort_units: dict[str, str], max_contact_rows: int | None = None,
                  max_state_rows: int | None = None,
                  max_state_bytes: int | None = None,
-                 events: tuple = (), gravity_m_s2: tuple[float, float, float] =
+                 events: tuple = (), checks: tuple = (),
+                 gravity_m_s2: tuple[float, float, float] =
                  (0.0, 0.0, -9.80665)):
         self.mujoco = mujoco
         self.model = model
@@ -253,6 +343,17 @@ class TelemetryRecorder:
             name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or f"body{b}"
             self.bodies.append((name, b))
 
+        self._body_ids = {name: body_id for name, body_id in self.bodies}
+        # Every-step watches derived from the acceptance checks. Only the kinds whose
+        # semantics need per-step evidence are registered; terminal-only checks are
+        # evaluated from recorded phase boundaries.
+        self._pose_watches: dict[str, dict] = {}
+        self._translation_watches: dict[str, dict] = {}
+        self._speed_watches: list[dict] = []
+        self._contact_watches: dict[str, dict] = {}
+        self._contact_state: dict[str, dict] = {}
+        self._build_watches(checks)
+
         self.actuators: list[tuple[str, int, int, float, str]] = []
         for a in range(model.nactuator):
             name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, a) or f"actuator{a}"
@@ -285,6 +386,187 @@ class TelemetryRecorder:
             "state_time_s", "force_time_s", "force_stage", "phase", "body_a", "geom_a",
             "body_b", "geom_b", "normal_force_n", "penetration_m",
         ]
+
+    # ------------------------------------------------------------------ watches
+    def _watch_body(self, name: str) -> int:
+        try:
+            return self._body_ids[name]
+        except KeyError as exc:
+            raise ValueError(
+                f"watch body {name!r} is not a named non-world body in the compiled model"
+            ) from exc
+
+    def _build_watches(self, checks) -> None:
+        """Register the every-step watches declared by the acceptance checks.
+
+        Called once from both the runner and the replay from the hash-verified acceptance,
+        so neither path can drift from the other or trust a recorded derived value.
+        """
+        for check in checks:
+            kind = getattr(check, "kind", None)
+            name = getattr(check, "name", None)
+            window = getattr(check, "window", "end")
+            if kind == "relative_pose" and window == "max_over_phase":
+                self._pose_watches[name] = {
+                    "a": self._watch_body(check.body_a),
+                    "b": self._watch_body(check.body_b),
+                    "phase": check.phase, "p0": None, "r0": None,
+                }
+                self.telemetry.watch_evidence[name] = {
+                    "kind": kind, "window": window, "phase": check.phase, "samples": 0,
+                    "translation_m": 0.0, "translation_time_s": None,
+                    "rotation_rad": 0.0, "rotation_time_s": None,
+                    "end_translation_m": None, "end_rotation_rad": None,
+                    "end_time_s": None,
+                }
+            elif kind == "relative_translation" and window == "max_over_phase":
+                self._translation_watches[name] = {
+                    "a": self._watch_body(check.body_a),
+                    "b": self._watch_body(check.body_b),
+                    "axis": check.axis, "frame": check.frame or "body_a",
+                    "from_phase": check.from_phase, "to_phase": check.to_phase,
+                    "reference": None,
+                }
+                self.telemetry.watch_evidence[name] = {
+                    "kind": kind, "window": window, "frame": check.frame or "body_a",
+                    "axis": check.axis, "from_phase": check.from_phase,
+                    "to_phase": check.to_phase, "samples": 0,
+                    "min_m": None, "min_time_s": None,
+                    "max_m": None, "max_time_s": None,
+                    "terminal_m": None, "terminal_time_s": None,
+                }
+            elif kind == "body_speed" and window == "max_over_phase":
+                self._speed_watches.append({
+                    "name": name, "body_id": self._watch_body(check.body),
+                    "body": check.body, "phase": check.phase,
+                })
+                self.telemetry.watch_evidence[name] = {
+                    "kind": kind, "window": window, "phase": check.phase,
+                    "body": check.body, "samples": 0, "speed_m_s": 0.0,
+                    "time_s": None, "terminal_speed_m_s": None,
+                    "terminal_time_s": None,
+                }
+            elif kind == "contact_duration":
+                # The longest uninterrupted interval above the summed force threshold is a
+                # whole-run quantity, independent of the display sampling interval.
+                pair = tuple(sorted((self._watch_body(check.body_a),
+                                     self._watch_body(check.body_b))))
+                self._contact_watches[name] = {
+                    "pair": pair, "threshold_n": float(check.force_threshold_n),
+                }
+                self._contact_state[name] = {
+                    "start_s": None, "samples": 0,
+                }
+                self.telemetry.watch_evidence[name] = {
+                    "kind": kind, "window": "end",
+                    "threshold_n": float(check.force_threshold_n),
+                    "samples": 0, "samples_above": 0, "longest_s": 0.0,
+                    "start_s": None, "end_s": None, "run_samples": 0,
+                    "peak_force_n": 0.0, "terminal_force_n": None,
+                    "terminal_time_s": None,
+                }
+
+    def _update_pose_watches(self, data, t: float, stage: str) -> bool:
+        """Accumulate the attached-local relative pose and signed translation every state."""
+        if not (self._pose_watches or self._translation_watches):
+            return True
+        phase = self._phase_label()
+        for name, watch in self._pose_watches.items():
+            a, b = watch["a"], watch["b"]
+            try:
+                p_rel, r_rel = relative_transform(
+                    data.xpos[a], data.xquat[a], data.xpos[b], data.xquat[b])
+            except ValueError as exc:
+                self.telemetry.invalid.append(
+                    {"stage": stage, "time_s": float(t), "reason": str(exc)})
+                return False
+            if stage == "initial":
+                watch["p0"], watch["r0"] = p_rel.copy(), r_rel.copy()
+                continue
+            if phase != watch["phase"] or watch["p0"] is None:
+                continue
+            delta_p, angle = pose_delta(watch["p0"], watch["r0"], p_rel, r_rel)
+            translation = float(np.linalg.norm(delta_p))
+            evidence = self.telemetry.watch_evidence[name]
+            evidence["samples"] += 1
+            if translation >= evidence["translation_m"]:
+                evidence["translation_m"] = translation
+                evidence["translation_time_s"] = float(t)
+            if angle >= evidence["rotation_rad"]:
+                evidence["rotation_rad"] = angle
+                evidence["rotation_time_s"] = float(t)
+            evidence["end_translation_m"] = translation
+            evidence["end_rotation_rad"] = angle
+            evidence["end_time_s"] = float(t)
+
+        for name, watch in self._translation_watches.items():
+            a, b = watch["a"], watch["b"]
+            try:
+                p_rel, _ = relative_transform(
+                    data.xpos[a], data.xquat[a], data.xpos[b], data.xquat[b])
+            except ValueError as exc:
+                self.telemetry.invalid.append(
+                    {"stage": stage, "time_s": float(t), "reason": str(exc)})
+                return False
+            if watch["frame"] == "world":
+                vector = (np.asarray(data.xpos[b], dtype=np.float64)
+                          - np.asarray(data.xpos[a], dtype=np.float64))
+            else:
+                vector = p_rel
+            if watch["from_phase"] == "initial":
+                if stage == "initial":
+                    watch["reference"] = vector.copy()
+            elif stage == "step" and phase == watch["from_phase"]:
+                watch["reference"] = vector.copy()
+            if (stage != "step" or phase != watch["to_phase"]
+                    or watch["reference"] is None):
+                continue
+            delta = vector - watch["reference"]
+            signed = float(delta[_AXIS_INDEX[watch["axis"]]])
+            evidence = self.telemetry.watch_evidence[name]
+            evidence["samples"] += 1
+            if evidence["min_m"] is None or signed < evidence["min_m"]:
+                evidence["min_m"] = signed
+                evidence["min_time_s"] = float(t)
+            if evidence["max_m"] is None or signed > evidence["max_m"]:
+                evidence["max_m"] = signed
+                evidence["max_time_s"] = float(t)
+            evidence["terminal_m"] = signed
+            evidence["terminal_time_s"] = float(t)
+        return True
+
+    def _update_contact_watches(self, pair_forces: dict, t: float) -> None:
+        """Track the longest uninterrupted above-threshold run of the summed pair force.
+
+        A state's run duration is the elapsed simulated time between its first and last
+        above-threshold states, so a run that spans N consecutive integration states counts
+        ``(N - 1) * dt``. An isolated one-state excursion is 0.0 s and is reported with its
+        sample count. A state at or below the threshold ends the run, so an interruption
+        can never merge two episodes, and a phase boundary cannot add an extra step.
+        """
+        for name, watch in self._contact_watches.items():
+            force = float(pair_forces.get(watch["pair"], 0.0))
+            evidence = self.telemetry.watch_evidence[name]
+            state = self._contact_state[name]
+            evidence["samples"] += 1
+            evidence["terminal_force_n"] = force
+            evidence["terminal_time_s"] = float(t)
+            if force > evidence["peak_force_n"]:
+                evidence["peak_force_n"] = force
+            if force > watch["threshold_n"]:
+                evidence["samples_above"] += 1
+                if state["start_s"] is None:
+                    state["start_s"] = float(t)
+                state["samples"] += 1
+                duration = float(t) - state["start_s"]
+                if duration > evidence["longest_s"]:
+                    evidence["longest_s"] = duration
+                    evidence["start_s"] = state["start_s"]
+                    evidence["end_s"] = float(t)
+                    evidence["run_samples"] = state["samples"]
+            else:
+                state["start_s"] = None
+                state["samples"] = 0
 
     # ------------------------------------------------------------------ headers
     def _make_trace_header(self) -> list[str]:
@@ -650,6 +932,20 @@ class TelemetryRecorder:
                     linear_velocity_m_s=tuple(float(v) for v in velocity[3:]),
                     mass_kg=float(self.model.body_mass[body_id]),
                 )
+            for watch in self._speed_watches:
+                if (watch["body"] != body_name or stage != "step"
+                        or self._phase_label() != watch["phase"]):
+                    continue
+                evidence = self.telemetry.watch_evidence[watch["name"]]
+                evidence["samples"] += 1
+                if linear >= evidence["speed_m_s"]:
+                    evidence["speed_m_s"] = linear
+                    evidence["time_s"] = float(t)
+                evidence["terminal_speed_m_s"] = linear
+                evidence["terminal_time_s"] = float(t)
+
+        if not self._update_pose_watches(data, t, stage):
+            return False
 
         # Actuation telemetry. ``actuator_force`` is the unity-gain motor's limited drive
         # before gearing; the generalized force is ``gear * actuator_force``.
@@ -685,6 +981,7 @@ class TelemetryRecorder:
         # Contacts at the observed state: named pairs, normal force and penetration. The
         # per-step maxima are what the acceptance predicates use; the sparse rows are display
         # evidence only.
+        pair_forces: dict[tuple[int, int], float] = {}
         for i in range(int(data.ncon)):
             contact = data.contact[i]
             geom1, geom2 = int(contact.geom1), int(contact.geom2)
@@ -700,6 +997,8 @@ class TelemetryRecorder:
             normal_force = abs(float(normal[0]))
             if not (math.isfinite(penetration) and math.isfinite(normal_force)):
                 return bad(f"non-finite contact telemetry on {body_a}/{body_b}")
+            pair = (min(body1, body2), max(body1, body2))
+            pair_forces[pair] = pair_forces.get(pair, 0.0) + normal_force
             if (self.event_tracker is not None
                     and (body_a in self._event_body_ids
                          or body_b in self._event_body_ids)):
@@ -732,6 +1031,8 @@ class TelemetryRecorder:
                     self._phase_label(),
                     body_a, geom_a, body_b, geom_b, normal_force, penetration,
                 ])
+
+        self._update_contact_watches(pair_forces, t)
 
         if self.event_tracker is not None and stage == "step" and self._phase is not None:
             ctrl_zero = all(abs(float(v)) <= 1e-12 for v in data.ctrl)

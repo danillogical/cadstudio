@@ -38,12 +38,14 @@ from .scenario import (
     PhaseSpec,
     ScenarioError,
     ScenarioSpec,
+    acceptance_from_text,
     acceptance_text_matches,
     build_fixture,
     canonical_json,
     content_hash,
     load_acceptance,
     load_scenario,
+    scenario_from_text,
     scenario_text_matches,
 )
 from .scene import SceneInvalid, export_scene
@@ -804,6 +806,37 @@ def run_scenario(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
                           acceptance_text=acceptance_text, fixture_label=scenario.fixture)
 
 
+def _validate_options_document(options) -> None:
+    """Strict, finite options document at the runner boundary.
+
+    Mirrors the CLI's scalar/flat-array rule and additionally rejects non-finite floats:
+    TOML admits ``inf``/``nan``, but a run summary is strict JSON, so writing them as ``null``
+    would produce a PASS record that its own lock cannot reproduce.
+    """
+    if not isinstance(options, dict):
+        raise ScenarioError("assembly options must be a TOML table")
+
+    def check_value(key: str, value) -> None:
+        if isinstance(value, bool) or isinstance(value, str):
+            return
+        if isinstance(value, int):
+            return
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ScenarioError(
+                    f"assembly option {key!r} must be finite, got {value!r}")
+            return
+        raise ScenarioError(
+            f"assembly option {key!r} must be a scalar or an array of scalars")
+
+    for key, value in options.items():
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                check_value(f"{key}[{index}]", item)
+        else:
+            check_value(key, value)
+
+
 def run_assembly(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
                  outdir: Path | None = None, *, scenario_text: str | None = None,
                  acceptance_text: str | None = None,
@@ -839,6 +872,7 @@ def run_assembly(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
             options = tomllib.loads(options_text)
         except tomllib.TOMLDecodeError as exc:
             raise ScenarioError(f"assembly options are not valid TOML: {exc}") from exc
+        _validate_options_document(options)
     return _run_with_spec(spec, scenario, acceptance, outdir, scenario_text=scenario_text,
                           acceptance_text=acceptance_text,
                           fixture_label=fixture_label or spec.name,
@@ -858,6 +892,16 @@ def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
     scenario_text = _select_document_text(scenario, scenario_text, scenario_text_matches)
     acceptance_text = _select_document_text(acceptance, acceptance_text,
                                             acceptance_text_matches)
+    # The typed path must satisfy the same strict loader that replay applies to the lock.
+    # This runs before any run directory is claimed, so a rejected typed criterion cannot
+    # leave PASS evidence whose own replay refuses to load.
+    try:
+        scenario_from_text(scenario_text)
+        acceptance_from_text(acceptance_text)
+    except ScenarioError as exc:
+        raise ScenarioError(
+            f"typed scenario/acceptance is not admissible by the strict loader: {exc}"
+        ) from exc
     run_dir, run_id = _claim_run_dir(scenario, outdir)
     started = time.perf_counter()
     stage = "export"
@@ -917,6 +961,7 @@ def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
                             else plan.state_rows),
             max_state_bytes=state_cap,
             events=acceptance.events,
+            checks=acceptance.checks,
             gravity_m_s2=tuple(spec.gravity_m_s2),
         )
         telemetry = _execute(mujoco, model, data, spec, scenario, plan, recorder,

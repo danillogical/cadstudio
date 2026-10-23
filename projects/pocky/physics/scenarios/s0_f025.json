@@ -1,0 +1,36 @@
+{
+  "schema_version": "m4a-1",
+  "scenario_id": "m5a1_s0_f025",
+  "fixture": "pocky_prototype",
+  "seed": 0,
+  "timestep_s": 0.001,
+  "sampling_interval_s": 0.001,
+  "budgets": {
+    "max_steps": 3600,
+    "max_sim_time_s": 3.6,
+    "max_trace_rows": 60000,
+    "max_state_rows": 3600,
+    "max_state_bytes": 134217728
+  },
+  "phases": [
+    {
+      "name": "reset",
+      "kind": "reset",
+      "initial": {
+        "crank_phi": -0.2425638740954852,
+        "rod_x": -0.005773502691896256,
+        "pusher_x": 0.011132495094369275
+      }
+    },
+    {
+      "name": "settle",
+      "kind": "settle",
+      "duration_s": 3.0
+    },
+    {
+      "name": "hold",
+      "kind": "hold",
+      "duration_s": 0.5
+    }
+  ]
+}
