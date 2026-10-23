@@ -26,6 +26,39 @@ ColliderKind = Literal["box", "cylinder", "capsule", "sphere", "convex"]
 PartRole = Literal["structure", "mechanism", "packet", "spare", "mount"]
 
 
+def _validate_solimp(solimp, label: str) -> None:
+    """MuJoCo solimp: (dmin, dmax, width[, midpoint, power]); width in metres."""
+    if len(solimp) not in (3, 5) or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+            for v in solimp):
+        raise ValueError(f"{label} solimp must be 3 or 5 finite numbers, got {solimp!r}")
+    dmin, dmax, width = solimp[:3]
+    if not 0.0 < dmin <= dmax < 1.0:
+        raise ValueError(f"{label} solimp needs 0 < dmin <= dmax < 1, got {solimp!r}")
+    if not width > 0.0:
+        raise ValueError(f"{label} solimp width must be positive (m), got {solimp!r}")
+    if len(solimp) == 5:
+        if not 0.0 < solimp[3] < 1.0:
+            raise ValueError(f"{label} solimp midpoint must be in (0, 1), got {solimp!r}")
+        if not solimp[4] >= 1.0:
+            raise ValueError(f"{label} solimp power must be >= 1, got {solimp!r}")
+
+
+def _validate_solref(solref, label: str) -> None:
+    """MuJoCo standard solref: (time constant in s, damping ratio), both positive."""
+    if len(solref) != 2 or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v) and v > 0.0 for v in solref):
+        raise ValueError(f"{label} solref must be (timeconst_s, dampratio), both finite and "
+                         f"positive, got {solref!r}")
+
+
+def _validate_nonneg(value, label: str) -> None:
+    if (not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(value) or value < 0.0):
+        raise ValueError(f"{label} must be finite and non-negative, got {value!r}")
+
+
 @dataclass(frozen=True)
 class Source:
     """Where a physical quantity came from. Mandatory on every physical input."""
@@ -110,6 +143,10 @@ class ColliderSpec:
     friction: tuple[float, float, float] | None = None
     # MuJoCo geom priority: the higher-priority geom's contact parameters win in a pair.
     priority: int = 0
+    # Per-geom contact numerics; None inherits the assembly default (see AssemblySpec).
+    solimp: tuple[float, ...] | None = None
+    solref: tuple[float, float] | None = None
+    margin: float | None = None
 
     def validate(self) -> None:
         _validate_id(self.collider_id, "collider_id")
@@ -147,6 +184,13 @@ class ColliderSpec:
                 or self.priority < 0):
             raise ValueError(f"collider {self.collider_id!r} priority must be a "
                              f"non-negative int, got {self.priority!r}")
+        label = f"collider {self.collider_id!r}"
+        if self.solimp is not None:
+            _validate_solimp(self.solimp, label)
+        if self.solref is not None:
+            _validate_solref(self.solref, label)
+        if self.margin is not None:
+            _validate_nonneg(self.margin, f"{label} margin")
 
 
 @dataclass(frozen=True)
@@ -433,6 +477,16 @@ class AssemblySpec:
     #: resolution only, never contact compliance, or the two effects are confounded.
     contact_timeconst_s: float = 2.0e-3
     contact_dampratio: float = 1.0
+    #: Optional contact numerics. ``None``/0 keeps MuJoCo's value (or this module's historic
+    #: default) and leaves the generated XML untouched. ``contact_solimp`` is (dmin, dmax,
+    #: width[, midpoint, power]) with width in metres; margin and gap are metres.
+    contact_solimp: tuple[float, ...] | None = None
+    contact_margin_m: float | None = None
+    contact_gap_m: float | None = None
+    #: Extra noslip solver iterations after the main solve; 0 leaves the pass off.
+    noslip_iterations: int = 0
+    #: Ratio of frictional to normal constraint impedance; ``None`` keeps MuJoCo's default.
+    impratio: float | None = None
     actuators: tuple[ActuatorSpec, ...] = ()
     source: Source = Source("derived", "declared assembly")
 
@@ -479,6 +533,39 @@ class AssemblySpec:
         if not (math.isfinite(self.contact_dampratio) and self.contact_dampratio > 0.0):
             raise ValueError("contact_dampratio must be positive, got "
                              f"{self.contact_dampratio!r}")
+        if self.contact_solimp is not None:
+            _validate_solimp(self.contact_solimp, "assembly contact")
+        if self.contact_margin_m is not None:
+            _validate_nonneg(self.contact_margin_m, "contact_margin_m")
+        if self.contact_gap_m is not None:
+            _validate_nonneg(self.contact_gap_m, "contact_gap_m")
+            if self.contact_gap_m > (self.contact_margin_m or 0.0):
+                raise ValueError(
+                    f"contact_gap_m ({self.contact_gap_m!r}) must not exceed the margin "
+                    f"({self.contact_margin_m!r}; unset means 0)")
+        if (not isinstance(self.noslip_iterations, int)
+                or isinstance(self.noslip_iterations, bool)
+                or not 0 <= self.noslip_iterations <= 10_000):
+            raise ValueError(f"noslip_iterations must be an int in 0..10000, "
+                             f"got {self.noslip_iterations!r}")
+        if self.impratio is not None and not (
+                isinstance(self.impratio, (int, float)) and not isinstance(self.impratio, bool)
+                and math.isfinite(self.impratio) and self.impratio > 0.0):
+            raise ValueError(f"impratio must be finite and positive, got {self.impratio!r}")
+        for body in self.bodies:
+            for part in body.parts:
+                for c in part.colliders:
+                    if c.solref is not None and c.solref[0] < 2.0 * self.timestep_s:
+                        raise ValueError(
+                            f"collider {c.collider_id!r} solref time constant "
+                            f"({c.solref[0]!r}) must be at least 2*dt "
+                            f"({2.0 * self.timestep_s!r}): MuJoCo's refsafe floor would "
+                            f"silently soften it")
+                    if (c.margin is not None and self.contact_gap_m is not None
+                            and c.margin < self.contact_gap_m):
+                        raise ValueError(
+                            f"collider {c.collider_id!r} margin ({c.margin!r}) is below "
+                            f"the assembly contact_gap_m ({self.contact_gap_m!r})")
         for body in self.bodies:
             joint = body.joint
             if (joint is not None and joint.limits is not None

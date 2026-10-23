@@ -239,6 +239,9 @@ def _resolved_inputs(spec) -> dict:
                      "friction": list(c.friction if c.friction is not None
                                       else spec.friction),
                      "priority": c.priority,
+                     "solimp": list(c.solimp) if c.solimp is not None else None,
+                     "solref": list(c.solref) if c.solref is not None else None,
+                     "margin": c.margin,
                      "source": _source(c.source)}
                     for c in part.colliders
                 ],
@@ -274,6 +277,12 @@ def _resolved_inputs(spec) -> dict:
         "friction": list(spec.friction),
         "contact_timeconst_s": spec.contact_timeconst_s,
         "contact_dampratio": spec.contact_dampratio,
+        "contact_solimp": (list(spec.contact_solimp)
+                           if spec.contact_solimp is not None else None),
+        "contact_margin_m": spec.contact_margin_m,
+        "contact_gap_m": spec.contact_gap_m,
+        "noslip_iterations": spec.noslip_iterations,
+        "impratio": spec.impratio,
         "source": _source(spec.source),
         "bodies": bodies,
         "actuators": [
@@ -337,6 +346,31 @@ def _apply_reset(mujoco, model, data, phase: PhaseSpec) -> None:
     mujoco.mj_forward(model, data)
 
 
+#: MuJoCo's solimp defaults for the optional midpoint and power when only 3 values are given.
+_SOLIMP_TAIL = (0.5, 2.0)
+#: The solimp this layer has always emitted for the shared default geom.
+_DEFAULT_SOLIMP = (0.95, 0.99, 0.001)
+
+
+def _declared_contact_numerics(spec, collider, model, gid):
+    """Return (label, compiled, declared) rows for one collider's contact numerics."""
+    solimp = collider.solimp or spec.contact_solimp or _DEFAULT_SOLIMP
+    tail = _SOLIMP_TAIL
+    # MuJoCo fills an omitted midpoint/power from the inherited default geom.
+    if len(solimp) == 3 and spec.contact_solimp and len(spec.contact_solimp) == 5:
+        tail = tuple(spec.contact_solimp[3:])
+    solimp = tuple(solimp) + tail[len(solimp) - 3:]
+    solref = collider.solref or (spec.contact_timeconst_s, spec.contact_dampratio)
+    margin = (collider.margin if collider.margin is not None
+              else spec.contact_margin_m or 0.0)
+    return (
+        ("solimp", model.geom_solimp[gid], solimp),
+        ("solref", model.geom_solref[gid], solref),
+        ("margin", model.geom_margin[gid], margin),
+        ("gap", model.geom_gap[gid], spec.contact_gap_m or 0.0),
+    )
+
+
 def _verify_compiled(mujoco, model, spec, export) -> tuple[dict, list[dict]]:
     """Declared-vs-compiled equality. A mismatch is a build error, not a tolerance."""
     facts: dict = {
@@ -364,6 +398,15 @@ def _verify_compiled(mujoco, model, spec, export) -> tuple[dict, list[dict]]:
         raise ScenarioError("compiled solver differs from the declared solver")
     if int(model.opt.iterations) != spec.iterations:
         raise ScenarioError("compiled solver iterations differ from declared")
+    if int(model.opt.noslip_iterations) != spec.noslip_iterations:
+        raise ScenarioError(
+            f"compiled noslip_iterations {int(model.opt.noslip_iterations)!r} differs from "
+            f"the declared {spec.noslip_iterations!r}")
+    if spec.impratio is not None and not math.isclose(
+            float(model.opt.impratio), spec.impratio, rel_tol=0.0, abs_tol=1e-12):
+        raise ScenarioError(
+            f"compiled impratio {float(model.opt.impratio)!r} differs from the declared "
+            f"{spec.impratio!r}")
     # Per-collider check, mapped by geom name; visual mesh geoms (contype=0) are not colliders.
     collider_geoms: dict[str, dict] = {}
     for body in spec.bodies:
@@ -383,15 +426,27 @@ def _verify_compiled(mujoco, model, spec, export) -> tuple[dict, list[dict]]:
                     raise ScenarioError(
                         f"compiled priority for collider {c.collider_id!r} is "
                         f"{int(model.geom_priority[gid])!r}, declared {c.priority!r}")
+                for label, compiled, expect in _declared_contact_numerics(spec, c, model, gid):
+                    if not np.allclose(compiled, expect, rtol=0.0, atol=1e-12):
+                        raise ScenarioError(
+                            f"compiled {label} for collider {c.collider_id!r} is "
+                            f"{np.asarray(compiled).tolist()!r}, declared "
+                            f"{np.asarray(expect).tolist()!r}")
                 collider_geoms[gname] = {
                     "friction": [float(v) for v in model.geom_friction[gid]],
                     "priority": int(model.geom_priority[gid]),
+                    "solimp": [float(v) for v in model.geom_solimp[gid]],
+                    "solref": [float(v) for v in model.geom_solref[gid]],
+                    "margin": float(model.geom_margin[gid]),
+                    "gap": float(model.geom_gap[gid]),
                 }
     facts["collider_geoms"] = collider_geoms
     facts["solver_settings"] = {
         "integrator": int(model.opt.integrator), "cone": int(model.opt.cone),
         "solver": int(model.opt.solver), "iterations": int(model.opt.iterations),
         "friction": [float(v) for v in spec.friction],
+        "noslip_iterations": int(model.opt.noslip_iterations),
+        "impratio": float(model.opt.impratio),
     }
     facts["runtime_identity"] = {
         "mujoco": str(require_mujoco().__version__),
@@ -523,14 +578,6 @@ def _verify_compiled(mujoco, model, spec, export) -> tuple[dict, list[dict]]:
 
     compliance: list[dict] = []
     contact_tc = float(spec.contact_timeconst_s)
-    if model.ngeom:
-        contact_solref = [float(v) for v in model.geom_solref[0]]
-        if not np.allclose(contact_solref,
-                           (contact_tc, float(spec.contact_dampratio)),
-                           rtol=0.0, atol=1e-12):
-            raise ScenarioError(
-                f"compiled contact solref {contact_solref!r} != declared "
-                f"{[contact_tc, spec.contact_dampratio]!r}")
     effective = effective_timeconst(mujoco, model, contact_tc)
     if effective > contact_tc * (1.0 + 1e-12):
         compliance.append({

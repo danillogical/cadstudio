@@ -38,6 +38,8 @@ def _physics_with_options(model_name, p, options):
     opts = load_options(options)
     return prototype_assembly(
         p, spring_stiffness_n_m=opts.spring_stiffness_n_m, timestep_s=opts.timestep_s,
+        contact_timeconst_s=opts.contact_timeconst_s, stop_timeconst_s=opts.stop_timeconst_s,
+        button_actuator=opts.button_actuator,
     )
 
 

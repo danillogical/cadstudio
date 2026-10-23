@@ -25,6 +25,7 @@ from pathlib import Path
 from build123d import Box, Pos
 
 from cadkit.physics.schema import (
+    ActuatorSpec,
     AssemblySpec,
     BodySpec,
     Frame,
@@ -67,6 +68,11 @@ CRANK_DAMPING = 0.005
 PUSHER_DAMPING = 0.5
 STOP_TIMECONST_S = 2.0e-3
 CONTACT_TIMECONST_S = 2.0e-3
+#: Validated contact/stop time constant and timestep (tc/4); see out/mujoco-sim-valid/sweep/results.md.
+VALID_CONTACT_TIMECONST_S = 2.5e-4
+VALID_TIMESTEP_S = 6.25e-5
+#: Button force bound: spring at full press is 500 N/m x 26.094 mm = 13.05 N; 25 N adds ~2x margin for friction and contacts.
+BUTTON_MAX_EFFORT_N = 25.0
 
 
 def _source(note: str) -> Source:
@@ -145,6 +151,9 @@ def prototype_assembly(
     timestep_s: float = 1.0e-3,
     capacity: int | None = None,
     spring_stiffness_n_m: float = DEFAULT_SPRING_STIFFNESS_N_M,
+    contact_timeconst_s: float = CONTACT_TIMECONST_S,
+    stop_timeconst_s: float = STOP_TIMECONST_S,
+    button_actuator: bool = False,
 ) -> AssemblySpec:
     """Build the assembled prototype scene at CAD button fraction 0.
 
@@ -171,6 +180,11 @@ def prototype_assembly(
         raise ValueError(f"timestep_s must be in (0, 0.01], got {timestep_s!r}")
     if not (math.isfinite(spring_stiffness_n_m) and spring_stiffness_n_m > 0.0):
         raise ValueError(f"spring stiffness must be positive, got {spring_stiffness_n_m!r}")
+
+    for name, value in (("contact_timeconst_s", contact_timeconst_s),
+                        ("stop_timeconst_s", stop_timeconst_s)):
+        if not (math.isfinite(value) and value > 0.0):
+            raise ValueError(f"{name} must be positive, got {value!r}")
 
     link = linkage_from(p)
     rest = pose_at_phi(link, link.phi0)
@@ -248,7 +262,7 @@ def prototype_assembly(
         axis=(0.0, 0.0, 1.0),
         anchor_mm=(link.pivot_x, link.pivot_y, 0.5 * (link.crank_z0 + link.crank_z1)),
         limits=CRANK_LIMITS, damping=CRANK_DAMPING,
-        stop_timeconst_s=STOP_TIMECONST_S, stop_dampratio=1.0,
+        stop_timeconst_s=stop_timeconst_s, stop_dampratio=1.0,
         source=_source("CAD pivot (-78, -8), 60 deg swing with a guard"),
     )
     rod_joint = JointSpec(
@@ -256,13 +270,13 @@ def prototype_assembly(
         anchor_mm=(0.0, 0.0, 0.0), limits=ROD_LIMITS, damping=ROD_DAMPING,
         spring=SpringSpec(spring_stiffness_n_m, SPRING_REFERENCE_M,
                           _source("assumed equivalent spring, installed 3 mm preload")),
-        stop_timeconst_s=STOP_TIMECONST_S, stop_dampratio=1.0,
+        stop_timeconst_s=stop_timeconst_s, stop_dampratio=1.0,
         source=_source("+X slide, 23.094 mm button stroke, CAD home/forward stops"),
     )
     pusher_joint = JointSpec(
         joint_id="pusher_x", body_id="pusher", kind="slide", axis=(1.0, 0.0, 0.0),
         anchor_mm=(0.0, 0.0, 0.0), limits=PUSHER_LIMITS, damping=PUSHER_DAMPING,
-        stop_timeconst_s=STOP_TIMECONST_S, stop_dampratio=1.0,
+        stop_timeconst_s=stop_timeconst_s, stop_dampratio=1.0,
         source=_source("+X slide, 50 mm CAD stroke with a 0.5 mm guard"),
     )
 
@@ -297,9 +311,12 @@ def prototype_assembly(
         bodies=bodies,
         gravity_m_s2=(0.0, 0.0, -9.80665),
         timestep_s=float(timestep_s),
+        actuators=((ActuatorSpec("button", "rod_x", "force", BUTTON_MAX_EFFORT_N,
+                                 source=_source("opt-in bounded button press on the rod slide"),),)
+                   if button_actuator else ()),
         integrator="RK4", cone="elliptic", solver="Newton", iterations=100,
         friction=colliders.PETG_FRICTION,
-        contact_timeconst_s=CONTACT_TIMECONST_S,
+        contact_timeconst_s=contact_timeconst_s,
         contact_dampratio=1.0,
         source=_source("original CAD assembly at button fraction 0; no packets"),
     )

@@ -62,6 +62,13 @@ from .telemetry import PhaseTelemetry, TelemetryRecorder
 REPLAY_FORMAT = "m4b-1"
 OPTIONS_LOCK = "assembly_options.lock.toml"
 MAX_REPLAY_STEPS = MAX_ARCHIVE_ROWS
+# Hard per-file ceiling that no declared scenario budget can raise.
+HARD_EVIDENCE_BYTES = 8 * 1024 * 1024 * 1024
+# Upper bounds on one CSV row, used to turn the declared row budgets into byte caps.
+_CONTACT_ROW_BYTES = 512
+_TRACE_ROW_BYTES = 16 * 1024
+# Slack over max_state_bytes for zip and npy headers.
+_ARCHIVE_HEADER_ALLOWANCE = 1024 * 1024
 _CHECKPOINT_MEMBERS = {
     "initial", "initial_row", "post_settle", "post_settle_row", "terminal", "terminal_row",
 }
@@ -95,6 +102,8 @@ class VerifiedRun:
     checkpoints: dict[str, np.ndarray]
     state_meta: dict
     source_hashes: dict[str, str] = field(default_factory=dict)
+    # Per-file read caps derived from the run's declared budgets; reused by the final recheck.
+    file_caps: dict[str, int] = field(default_factory=dict)
 
 
 def _load_json(root: Path, rel: str) -> tuple[dict, str]:
@@ -121,13 +130,49 @@ def _parse_json_bytes(raw: bytes, rel: str) -> dict:
         raise EvidenceError(str(exc)) from exc
 
 
-def _read_all_evidence(run_dir: Path, *, max_bytes: int) -> dict[str, bytes]:
+def _declared_caps(scenario_raw: bytes, *, max_bytes: int,
+                   max_rows: int) -> tuple[dict[str, int], int, int]:
+    """Per-file byte caps and the state row cap implied by the run's own scenario budgets.
+
+    The values never fall below the caller's floor and never exceed ``HARD_EVIDENCE_BYTES``.
+    A scenario that does not parse yields the floor; full verification rejects it later, and
+    the manifest binds the scenario hash, so a tampered budget cannot pass verification.
+    """
+    try:
+        budgets = scenario_from_text(scenario_raw.decode("utf-8")).budgets
+    except (UnicodeDecodeError, ScenarioError):
+        return {}, max_bytes, max_rows
+
+    def cap(derived: int) -> int:
+        return max(max_bytes, min(int(derived), HARD_EVIDENCE_BYTES))
+
+    caps = {
+        "contacts.csv": cap(int(budgets.max_trace_rows) * 16 * _CONTACT_ROW_BYTES),
+        "trace.csv": cap(int(budgets.max_trace_rows) * _TRACE_ROW_BYTES),
+    }
+    state_bytes = max_bytes
+    if budgets.max_state_bytes is not None:
+        state_bytes = cap(int(budgets.max_state_bytes) + _ARCHIVE_HEADER_ALLOWANCE)
+        caps["states.npz"] = state_bytes
+    rows = max_rows
+    if budgets.max_state_rows is not None:
+        rows = max(max_rows, int(budgets.max_state_rows))
+    return caps, state_bytes, rows
+
+
+def _read_all_evidence(run_dir: Path, *, max_bytes: int,
+                       file_caps: dict[str, int] | None = None,
+                       preread: dict[str, bytes] | None = None) -> dict[str, bytes]:
     """Read every evidence file once into immutable bytes; nothing is reopened later."""
     required = ("manifest.json", "summary.json", "scenario.json", "acceptance.lock.json",
                 "scene.xml", "states.npz", "report.json", "state_meta.json",
                 "checkpoints.npz", "trace.csv", "contacts.csv")
-    raw_files = {rel: bounded_regular_bytes(run_dir, rel, max_bytes=max_bytes)
-                 for rel in required}
+    file_caps = file_caps or {}
+    raw_files = dict(preread or {})
+    for rel in required:
+        if rel not in raw_files:
+            raw_files[rel] = bounded_regular_bytes(
+                run_dir, rel, max_bytes=file_caps.get(rel, max_bytes))
     manifest = _parse_json_bytes(raw_files["manifest.json"], "manifest.json")
     summary = _parse_json_bytes(raw_files["summary.json"], "summary.json")
     extra = set(manifest.get("artifacts", {})) | set(summary.get("scene", {}).get("assets", {}))
@@ -190,7 +235,13 @@ def load_verified_run(run_dir: Path, *, max_rows: int = MAX_ARCHIVE_ROWS,
     if not run_dir.is_dir():
         raise ReplayError(f"run directory {run_dir} does not exist")
     try:
-        raw_files = _read_all_evidence(run_dir, max_bytes=max_bytes)
+        # Bootstrap: the small scenario.json is read under the floor cap first so the other
+        # files can be read under the budgets the runner was allowed to write them with.
+        scenario_raw = bounded_regular_bytes(run_dir, "scenario.json", max_bytes=max_bytes)
+        file_caps, state_bytes, max_rows = _declared_caps(
+            scenario_raw, max_bytes=max_bytes, max_rows=max_rows)
+        raw_files = _read_all_evidence(run_dir, max_bytes=max_bytes, file_caps=file_caps,
+                                       preread={"scenario.json": scenario_raw})
         manifest = _parse_json_bytes(raw_files["manifest.json"], "manifest.json")
         summary = _parse_json_bytes(raw_files["summary.json"], "summary.json")
         report = _parse_json_bytes(raw_files["report.json"], "report.json")
@@ -258,7 +309,7 @@ def load_verified_run(run_dir: Path, *, max_rows: int = MAX_ARCHIVE_ROWS,
         state = read_state_archive_bytes(raw_files["states.npz"],
                                          expected_members=required_members(
                                              state_meta["layout"]),
-                                         max_bytes=max_bytes, max_rows=max_rows,
+                                         max_bytes=state_bytes, max_rows=max_rows,
                                          allow_nonfinite=allow_nonfinite)
         if not allow_nonfinite:
             require(np.all(np.isfinite(state["integration_state"])),
@@ -438,7 +489,7 @@ def load_verified_run(run_dir: Path, *, max_rows: int = MAX_ARCHIVE_ROWS,
         raise ReplayError(f"malformed run evidence: {type(exc).__name__}: {exc}") from exc
     return VerifiedRun(run_dir, manifest, summary, report, scenario, acceptance,
                        scenario_text, acceptance_text, xml, assets, state, checkpoints,
-                       state_meta, source_hashes)
+                       state_meta, source_hashes, file_caps)
 
 
 def parse_saved_scene(xml: bytes, assets: dict[str, bytes]):
@@ -519,6 +570,12 @@ def _verify_compiled_against_record(mujoco, model, summary: dict) -> None:
     require(int(model.opt.solver) == int(settings["solver"]), "compiled solver differs")
     require(int(model.opt.iterations) == int(settings["iterations"]),
             "compiled iterations differ")
+    if "noslip_iterations" in settings:
+        # Summaries recorded before contact numerics were configurable lack these keys.
+        require(int(model.opt.noslip_iterations) == int(settings["noslip_iterations"]),
+                "compiled noslip_iterations differ")
+        require(float(model.opt.impratio) == float(settings["impratio"]),
+                "compiled impratio differs")
     recorded_geoms = summary["solver"].get("collider_geoms")
     if recorded_geoms is None:
         # Summaries recorded before per-collider friction carry only the shared default.
@@ -534,6 +591,12 @@ def _verify_compiled_against_record(mujoco, model, summary: dict) -> None:
                     f"compiled friction for collider geom {name!r} differs")
             require(int(model.geom_priority[gid]) == int(recorded["priority"]),
                     f"compiled priority for collider geom {name!r} differs")
+            for key, array in (("solimp", model.geom_solimp), ("solref", model.geom_solref),
+                               ("margin", model.geom_margin), ("gap", model.geom_gap)):
+                # Records from before configurable contact numerics carry no such keys.
+                if key in recorded:
+                    require(np.allclose(array[gid], recorded[key], rtol=0.0, atol=1e-12),
+                            f"compiled {key} for collider geom {name!r} differs")
     for name, recorded in summary["solver"]["bodies"].items():
         bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
         require(bid >= 0, f"compiled model is missing body {name!r}")
@@ -1117,7 +1180,10 @@ def replay_run(run_dir: Path, out_dir: Path) -> dict:
                 f"replay wall time {wall:.3f}s exceeded {MAX_REPLAY_WALL_S}s")
         # Source evidence must be byte-identical before any result is published.
         for rel, digest in source.source_hashes.items():
-            require(raw_sha256(bounded_regular_bytes(source.run_dir, rel)) == digest,
+            recheck = bounded_regular_bytes(
+                source.run_dir, rel,
+                max_bytes=source.file_caps.get(rel, MAX_ARCHIVE_BYTES))
+            require(raw_sha256(recheck) == digest,
                     f"source evidence {rel!r} changed during replay")
     except (ReplayError, EvidenceError, ArchiveError, ScenarioError, ValueError) as exc:
         failure = {

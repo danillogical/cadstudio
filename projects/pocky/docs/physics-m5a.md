@@ -14,6 +14,10 @@ about this model, computed on contacts that are themselves 1.7–4× past the de
 tolerance. It is **not** evidence that the real housing is unretained. The *direction and repeatability* of the
 motion are the part a later valid run can confirm or refute; the magnitudes are not.
 
+## Update: valid numerics (read this first)
+
+The statements below describe the original 2 ms-compliance runs and are kept as the historical record. A follow-up traced the invalidity to impact transients in the first 50 ms of settle and reran S0 with contact and stop time constant 0.25 ms at timestep 0.0625 ms. All eight S0 cases are then valid (peak penetration at most 0.1032 mm) and the evaluator reports FAIL, not INCONCLUSIVE: the body drops 4.4711 to 4.6600 mm and rotates 2.9598 to 3.0907 degrees. An S1 slow-press run (peak penetration 0.1290 mm) shows the body lifted about 1.1 mm and the button stalling at 59.1% of its stroke. The full account, with the convergence sweep, the code changes and a comparison with the physical prototype, is `docs/mujoco-sim-valid-report.md`.
+
 ## What was run
 
 Eight no-packet cases through `cad physics run pocky/prototype`, all on the runtime scene at
