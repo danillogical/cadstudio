@@ -14,7 +14,7 @@ uv sync
 uv run cad list
 ```
 
-`cad list` prints every model as `<project>/<model>`, for example `armor/armor_industrial`. Commands take `<project>/<model>`, or a bare model name when it is unique across projects. Add `--json` to `list`, `build` or `doctor` for one machine-readable document on stdout (progress goes to stderr); `cad doctor` reports the local toolchain.
+`cad list` prints every model as `<project>/<model>`, for example `armor/armor_industrial`. Commands take `<project>/<model>`, or a bare model name when it is unique across projects. Add `--json` to `list`, `build`, `gui scene` or `doctor` for one machine-readable document on stdout (progress goes to stderr); `cad doctor` reports the local toolchain.
 
 Output goes to `out/<project>/<model>/`. Adding `--check` writes `report.md` with a check table, and `--render` writes PNGs to `out/<project>/<model>/renders/`. Each project's default params file is `projects/<project>/params.toml`. To rebuild one model with both:
 

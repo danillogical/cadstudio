@@ -1,4 +1,4 @@
-"""``cad`` command line: list / build / render / check / doctor ``<project>/<model>``."""
+"""``cad`` command line: list / build / render / check / doctor / gui ``<project>/<model>``."""
 from __future__ import annotations
 
 import argparse
@@ -210,6 +210,46 @@ def cmd_doctor(args) -> int:
         report = collect()
         print(format_text(report))
     return 0 if report["ok"] else 1
+
+
+def _gui_scene(args) -> int:
+    # Function-local import: cadkit core must not import cadkit.gui at module load.
+    from .gui.scene import SceneError, write_scene
+
+    try:
+        sets = _parse_sets(args.set)
+        if args.json:
+            with _stdout_to_stderr():
+                state = write_scene(args.model, params_path=args.params, sets=sets, out=args.out)
+        else:
+            state = write_scene(args.model, params_path=args.params, sets=sets, out=args.out)
+    except (SceneError, OSError, SystemExit) as exc:
+        msg = str(exc.code) if isinstance(exc, SystemExit) else str(exc)
+        print(msg, file=sys.stderr)
+        if args.json:
+            _emit_json({"model": args.model, "error": msg, "exit_code": 1})
+        return 1
+
+    if not args.json:
+        for path in state["written"]:
+            print(f"wrote {path}")
+        return 0
+    _emit_json({
+        "model": f"{state['project']}/{state['model']}",
+        "outdir": str(state["outdir"]),
+        "scene": str(state["scene"]),
+        "parts": state["parts"],
+        "written": [str(path) for path in state["written"]],
+        "exit_code": 0,
+    })
+    return 0
+
+
+def cmd_gui(args) -> int:
+    """``cad gui <verb>``: artifacts for the browser UI; imports are lazy."""
+    if args.verb == "scene":
+        return _gui_scene(args)
+    raise SystemExit(f"unknown gui verb {args.verb!r}")
 
 
 def cmd_physics(args) -> int:
@@ -705,6 +745,17 @@ def main(argv: list[str] | None = None) -> int:
     doctor = sub.add_parser("doctor", help="check the local toolchain")
     doctor.add_argument("--json", action="store_true", help="print one JSON document on stdout")
     doctor.set_defaults(fn=cmd_doctor)
+
+    gui = sub.add_parser("gui", help="GUI artifacts and service")
+    gui_sub = gui.add_subparsers(dest="verb", required=True)
+    scene = gui_sub.add_parser("scene", help="export scene.json and parts/<id>.glb (assembly coords, mm)")
+    scene.add_argument("model", help="<project>/<model>, or a bare <model> unique across projects")
+    scene.add_argument("--params", help="params TOML (default: the project's params file)")
+    scene.add_argument("--set", nargs="+", action="extend", metavar="KEY=VAL",
+                       help="override params, e.g. structure.min_wall=2.0")
+    scene.add_argument("--out", help="scene dir (default out/<project>/<model>/scene)")
+    scene.add_argument("--json", action="store_true", help="print one JSON document on stdout")
+    scene.set_defaults(fn=cmd_gui)
 
     phys = sub.add_parser("physics", help="optional rigid-body physics (needs --extra physics)")
     phys_sub = phys.add_subparsers(dest="verb", required=True)

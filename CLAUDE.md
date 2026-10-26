@@ -18,6 +18,7 @@ Projects:
 - `uv run cad build <model> [--part NAME] [--render] [--check] [--views standard|detail|sections|all] [--set KEY=VAL ...] [--params PATH] [--out DIR] [--json]` exports STEP, STL and 3MF, then optionally renders and checks.
 - `uv run cad render <model> [--views ...]` renders only.
 - `uv run cad check <model> [--set ...]` runs checks only. Exit code is 1 if any check FAILs.
+- `uv run cad gui scene <model> [--set ...] [--params P] [--out DIR] [--json]` writes `out/<project>/<model>/scene/` (`scene.json` and `parts/<id>.glb` in assembly coordinates, in mm).
 - `uv run cad doctor [--json]` reports Python, uv, build123d, MuJoCo, node/npm, the output dir and the UI/extension builds.
 - `uv run pytest tests -q` runs the test suite (about 3.5 minutes).
 
