@@ -1,0 +1,28 @@
+{
+  "name": "cadstudio",
+  "displayName": "CADStudio",
+  "description": "Open the CADStudio GUI in a VS Code webview.",
+  "version": "0.0.1",
+  "publisher": "danillogical",
+  "engines": {
+    "vscode": "^1.89.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onCommand:cadstudio.openGui",
+    "onUri"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cadstudio.openGui",
+        "title": "CADStudio: Open GUI"
+      }
+    ]
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  }
+}
