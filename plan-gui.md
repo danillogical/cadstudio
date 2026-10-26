@@ -1,6 +1,6 @@
 # plan-gui.md: cadstudio GUI (browser + VS Code webview)
 
-**Status:** G0 and G1 merged and verified; H0 browser-first fallback selected by the user on 2026-10-26. G2a merged, merge gate running; proceeding to G2b in its isolated worktree.
+**Status:** G0 and G1 merged and verified; H0 browser-first fallback selected by the user on 2026-10-26. G2a merged and verified; G2b is implementing in its isolated worktree.
 **Date:** 2026-10-25.
 **Started from:** `~/Downloads/plan-draft-gui.md`, adapted to the repo as it stands at `81649e6`.
 **Runs on:** webstudio.local, through packetd (Codex skill `packetd`, MCP server `http://127.0.0.1:7766/mcp`).
@@ -32,7 +32,9 @@ What changed from the draft, after reading the repo:
 
 **G1 execution (2026-10-26):** packet `pk-sr2fm104` ACCEPTED in round 1 with no findings, squash-merged as `d98d66b`. The merge gate passed: 1,484 Python/physics tests passed (12 skipped), 25 extension tests passed, the committed build stayed byte-identical, `uv.lock` stayed unchanged, and the private-mirror scan passed.
 
-**G2a execution (2026-10-26):** packet `pk-dgaq1x7w` ACCEPTED in round 1 with no findings. Scene acceptance: 11 tests passed; the syringe command exported all eight parts as valid JSON, and 10 CLI/import-boundary tests passed. Squash-merged after G1's gate; its full merge gate is running.
+**G2a execution (2026-10-26):** packet `pk-dgaq1x7w` ACCEPTED in round 1 with no findings. Scene acceptance: 11 tests passed; the syringe command exported all eight parts as valid JSON, and 10 CLI/import-boundary tests passed. Squash-merged as `cd260bb` after G1's gate. The full merge gate passed: 1,497 Python/physics tests passed (10 skipped), 25 extension tests passed, the committed build stayed byte-identical, `uv.lock` stayed unchanged, and the private-mirror scan passed.
+
+**H3 preparation (2026-10-26):** the referenced two-cycle run was absent locally. Generated `out/mujoco-two-cycle/wedge_clamped` with the existing documented scenario, acceptance and wedge-clamped options: PASS, all 22 checks. The existing preview loads its 236,001 states over 14.75 s; its dry-run summary is saved under `out/.gui-verification/` for a real-run comparison after G2b. H3 itself remains pending.
 
 ## 1. Goals and boundaries
 
