@@ -1,6 +1,6 @@
 # plan-gui.md: cadstudio GUI (browser + VS Code webview)
 
-**Status:** G0 and G1 merged and verified; H0 browser-first fallback selected by the user on 2026-10-26. G2a merged and verified. G2b merged and verified. G3a merged, full merge gate running; G3b is planning in its isolated worktree.
+**Status:** G0 and G1 merged and verified; H0 browser-first fallback selected by the user on 2026-10-26. G2a merged and verified. G2b merged and verified. G3a merged and verified. G3b merged, full merge gate running; proceeding to G3c in its isolated worktree.
 **Date:** 2026-10-25.
 **Started from:** `~/Downloads/plan-draft-gui.md`, adapted to the repo as it stands at `81649e6`.
 **Runs on:** webstudio.local, through packetd (Codex skill `packetd`, MCP server `http://127.0.0.1:7766/mcp`).
@@ -36,7 +36,9 @@ What changed from the draft, after reading the repo:
 
 **G2b execution (2026-10-26):** packet `pk-1np4tv0g` ACCEPTED in round 1 with no findings, squash-merged as `e2324e0`. Acceptance: 27 trajectory/replay tests and four preview tests passed; an additional Pocky/replay regression passed (453 passed, 121 skipped). The full merge gate passed: 1,511 Python/physics tests passed (10 skipped), 25 extension tests passed, the committed build stayed byte-identical, `uv.lock` stayed unchanged, and the private-mirror scan passed.
 
-**G3a execution (2026-10-26):** packet `pk-5qvayr8b` ACCEPTED in round 2 with no remaining findings, squash-merged as `ce21c5c`. The round-1 cancellation race and checkout-dependent fallback-page test were fixed and covered by regressions. Acceptance: 20 service tests and 10 CLI/import-boundary tests passed. The full merge gate is running.
+**G3a execution (2026-10-26):** packet `pk-5qvayr8b` ACCEPTED in round 2 with no remaining findings, squash-merged as `ce21c5c`. The round-1 cancellation race and checkout-dependent fallback-page test were fixed and covered by regressions. Acceptance: 20 service tests and 10 CLI/import-boundary tests passed. The full merge gate passed: 1,531 Python/physics tests passed (10 skipped), 25 extension tests passed, the committed build stayed byte-identical, `uv.lock` stayed unchanged, and the private-mirror scan passed. A real-data service probe served all syringe and two-cycle meshes and poses, rejected unauthenticated API requests, and preserved the old scene as stale after an invalid build.
+
+**G3b execution (2026-10-26):** packet `pk-mvxte15t` ACCEPTED in round 2 with no remaining findings. A failed switch to another model now clears the old scene and panels; a failed reload of the same model preserves the last good scene. Acceptance: 65 UI tests, TypeScript and production build passed. Squash-merged after G3a's gate; its full merge gate is running.
 
 **H3 preparation (2026-10-26):** the referenced two-cycle run was absent locally. Generated `out/mujoco-two-cycle/wedge_clamped` with the existing documented scenario, acceptance and wedge-clamped options: PASS, all 22 checks. The existing preview loads its 236,001 states over 14.75 s; its dry-run summary is saved under `out/.gui-verification/` and is byte-identical after G2b. Real-run trajectory export passed: 886 frames, six bodies (including all three packets), 13 phases, and 45,583 contact samples; the source run listing, sizes and mtimes stayed unchanged. H3 itself remains pending.
 
