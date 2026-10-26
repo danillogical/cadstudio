@@ -245,10 +245,46 @@ def _gui_scene(args) -> int:
     return 0
 
 
+def _gui_trajectory(args) -> int:
+    # Function-local imports: cadkit core must not import cadkit.gui or mujoco at module load.
+    from .gui.trajectory import write_trajectory
+    from .physics import PhysicsUnavailable
+
+    try:
+        if args.json:
+            with _stdout_to_stderr():
+                state = write_trajectory(args.run_dir, fps=args.fps, contacts=args.contacts)
+        else:
+            state = write_trajectory(args.run_dir, fps=args.fps, contacts=args.contacts)
+    except (ValueError, OSError, PhysicsUnavailable) as exc:
+        msg = str(exc)
+        print(msg, file=sys.stderr)
+        if args.json:
+            _emit_json({"run": args.run_dir, "error": msg, "exit_code": 1})
+        return 1
+
+    if not args.json:
+        for path in state["written"]:
+            print(f"wrote {path}")
+        return 0
+    _emit_json({
+        "run": state["run"],
+        "outdir": str(state["outdir"]),
+        "trajectory": str(state["trajectory"]),
+        "frameCount": state["frameCount"],
+        "bodies": state["bodies"],
+        "written": [str(path) for path in state["written"]],
+        "exit_code": 0,
+    })
+    return 0
+
+
 def cmd_gui(args) -> int:
     """``cad gui <verb>``: artifacts for the browser UI; imports are lazy."""
     if args.verb == "scene":
         return _gui_scene(args)
+    if args.verb == "trajectory":
+        return _gui_trajectory(args)
     raise SystemExit(f"unknown gui verb {args.verb!r}")
 
 
@@ -756,6 +792,17 @@ def main(argv: list[str] | None = None) -> int:
     scene.add_argument("--out", help="scene dir (default out/<project>/<model>/scene)")
     scene.add_argument("--json", action="store_true", help="print one JSON document on stdout")
     scene.set_defaults(fn=cmd_gui)
+
+    trajectory = gui_sub.add_parser(
+        "trajectory",
+        help="export <run>.gui/ (trajectory.json, poses.bin, meshes/*.glb; mm)")
+    trajectory.add_argument("run_dir", help="a `cad physics run` output directory")
+    trajectory.add_argument("--fps", type=float, default=60.0,
+                            help="sim frames per second (default 60)")
+    trajectory.add_argument("--contacts", action="store_true",
+                            help="also write contacts.bin (points and normal forces)")
+    trajectory.add_argument("--json", action="store_true", help="print one JSON document on stdout")
+    trajectory.set_defaults(fn=cmd_gui)
 
     phys = sub.add_parser("physics", help="optional rigid-body physics (needs --extra physics)")
     phys_sub = phys.add_subparsers(dest="verb", required=True)

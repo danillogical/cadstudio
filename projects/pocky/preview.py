@@ -17,12 +17,12 @@ Video (H.264 mp4 through ffmpeg, offscreen):
         --start 2.9 --end 3.6 --transparent body,lip
 
 `--speed` is sim seconds per playback second (0.25 = 4x slow motion). `--dry-run` loads the run
-and prints the frame schedule without opening a window.
+and prints the frame schedule without opening a window. Loading and state restore live in
+`cadkit.physics.playback`.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -37,9 +37,8 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from cadkit.physics.replay import parse_saved_scene  # noqa: E402
-from cadkit.physics.state_archive import (  # noqa: E402
-    MAX_ARCHIVE_BYTES, load_state_meta, read_state_archive, required_members, set_native_state)
+from cadkit.physics.playback import Playback as RunPlayback  # noqa: E402
+from cadkit.physics.playback import PlaybackError  # noqa: E402
 
 DISPLAY_FPS = 60.0       # interactive refresh rate
 TRANSPARENT_ALPHA = 0.25
@@ -57,34 +56,22 @@ KEY_LIGHT = ('<light name="preview_key" directional="true" pos="0 0 1" dir="-0.3
              'diffuse="0.7 0.7 0.7" specular="0.15 0.15 0.15" castshadow="false"/>')
 
 
-class Run:
+def _with_lights(xml: bytes) -> bytes:
+    """Inject the key light and a plain skybox into the in-memory XML copy only."""
+    xml = xml.replace(b"</asset>", SKYBOX.encode() + b"</asset>", 1)
+    head, sep, tail = xml.rpartition(b"</worldbody>")
+    return head + KEY_LIGHT.encode() + sep + tail if sep else xml
+
+
+class Run(RunPlayback):
     """The saved scene compiled in memory plus the per-step state archive."""
 
     def __init__(self, run_dir: Path, transparent: list[str], colliders: bool = False):
-        import mujoco
-        self.mujoco = mujoco
-        self.run_dir = run_dir
-        scene = run_dir / "scene.xml"
-        if not scene.is_file():
-            raise SystemExit(f"{run_dir} has no scene.xml; is it a `cad physics run` directory?")
-        assets = {f"assets/{p.name}": p.read_bytes()
-                  for p in sorted((run_dir / "assets").glob("*.stl"))}
-        xml = scene.read_bytes()
-        # Inject the key light and a plain skybox (the clear colour) into the in-memory copy only.
-        xml = xml.replace(b"</asset>", SKYBOX.encode() + b"</asset>", 1)
-        head, sep, tail = xml.rpartition(b"</worldbody>")
-        self.model = parse_saved_scene(head + KEY_LIGHT.encode() + sep + tail if sep else xml, assets)
+        try:
+            super().__init__(run_dir, xml_filter=_with_lights)
+        except PlaybackError as exc:
+            raise SystemExit(str(exc)) from None
         self.colliders = colliders
-        self.data = mujoco.MjData(self.model)
-        meta = load_state_meta(run_dir / "state_meta.json")
-        npz = run_dir / "states.npz"
-        self.state = read_state_archive(
-            npz, expected_members=required_members(meta["layout"]),
-            max_bytes=max(MAX_ARCHIVE_BYTES, npz.stat().st_size))
-        self.times = np.asarray(self.state["time"], dtype=np.float64).reshape(-1)
-        self.phase_names = [str(v) for v in self.state["phase_names"]]
-        self.phase_index = np.asarray(self.state["phase_index"])
-        self.scenario = json.loads((run_dir / "scenario.json").read_text())
         self._style(transparent)
 
     def _style(self, transparent: list[str]) -> None:
@@ -109,31 +96,6 @@ class Run:
                 raise SystemExit(f"--transparent: no body {name!r}; bodies are {valid}")
             m.geom_rgba[m.geom_bodyid == body, 3] = TRANSPARENT_ALPHA
 
-    @property
-    def t_min(self) -> float:
-        return float(self.times[0])
-
-    @property
-    def t_max(self) -> float:
-        return float(self.times[-1])
-
-    def row_at(self, t: float) -> int:
-        """Nearest saved step to sim time `t`."""
-        i = int(np.searchsorted(self.times, t))
-        if i <= 0:
-            return 0
-        if i >= len(self.times):
-            return len(self.times) - 1
-        return i if self.times[i] - t < t - self.times[i - 1] else i - 1
-
-    def phase_at(self, row: int) -> str:
-        return self.phase_names[int(self.phase_index[row])]
-
-    def restore(self, row: int) -> None:
-        """Same restore as replay: native integration state, then a forward pass."""
-        set_native_state(self.mujoco, self.model, self.data, self.state["integration_state"][row])
-        self.mujoco.mj_forward(self.model, self.data)
-
     def style_contacts(self, rows: np.ndarray, force_scale: float = 1.0) -> None:
         """Shrink contact markers to this model's scale and size force arrows to the peak force."""
         m, d = self.model, self.data
@@ -151,32 +113,6 @@ class Run:
         # The strongest sampled contact draws a short arrow, so the scale follows the window.
         if forces:
             m.vis.map.force = force_scale * 0.01 / max(max(forces), 1e-9)
-
-    def framing(self, rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Axis-aligned bounds of the moving assembly over sampled rows."""
-        m, d = self.model, self.data
-        # Bodies welded to the world (the floor plate) would dominate the extent; skip them.
-        moving = m.body_weldid[m.geom_bodyid] != 0
-        geoms = np.flatnonzero(moving) if moving.any() else np.arange(m.ngeom)
-        corners = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
-        lo = np.full(3, np.inf)
-        hi = np.full(3, -np.inf)
-        reach = None
-        for row in rows:
-            self.restore(int(row))
-            for g in geoms:
-                # World-space corners of the geom's local AABB (centre + half-size).
-                local = m.geom_aabb[g, :3] + corners * m.geom_aabb[g, 3:]
-                world = d.geom_xpos[g] + local @ d.geom_xmat[g].reshape(3, 3).T
-                # Skip geoms that leave the assembly (a pulled-away packet), so they cannot zoom the camera out.
-                if reach is not None and ((world < reach[0]).any() or (world > reach[1]).any()):
-                    continue
-                lo, hi = np.minimum(lo, world.min(axis=0)), np.maximum(hi, world.max(axis=0))
-            if reach is None:
-                # The first row's bounds, grown by their own size on every side, bound later rows.
-                size = np.maximum(hi - lo, 1e-3)
-                reach = (lo - size, hi + size)
-        return lo, hi
 
     def fit_distance(self, lo, hi, azimuth: float, elevation: float, aspect: float) -> float:
         """Distance at which the bounds' corners fill the frame (with a 15% margin)."""
