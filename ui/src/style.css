@@ -1,0 +1,250 @@
+:root {
+  --bg: #1e1e1e;
+  --panel: #252526;
+  --border: #3c3c3c;
+  --text: #d4d4d4;
+  --muted: #9d9d9d;
+  --accent: #0e639c;
+  --selected: #094771;
+  --stale: #7a5b00;
+  --error: #7a1f1f;
+  --info: #1f4f7a;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+.banner {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--info);
+  overflow-wrap: anywhere;
+}
+
+.banner[data-kind="stale"] {
+  background: var(--stale);
+}
+
+.banner[data-kind="error"] {
+  background: var(--error);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  min-height: 0;
+  flex: 1;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  min-width: 0;
+}
+
+.picker-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.picker-panel select {
+  width: 100%;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px;
+}
+
+.tree-panel,
+.props-panel {
+  min-height: 0;
+  overflow: auto;
+}
+
+.tree-panel {
+  flex: 1 1 auto;
+}
+
+.props-panel {
+  flex: 0 1 auto;
+}
+
+h2,
+h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+h3 {
+  margin-top: 10px;
+}
+
+.part-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.part {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.part:hover {
+  background: #2f2f30;
+}
+
+.part.selected {
+  background: var(--selected);
+}
+
+.part:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.part-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: minmax(70px, auto) minmax(0, 1fr);
+  gap: 2px 8px;
+  margin: 0;
+  font-size: 12px;
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.viewport-panel {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.viewport {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.viewport-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-overlay {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgb(0 0 0 / 45%);
+  color: var(--muted);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+#fit {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+#fit:hover {
+  background: #2f2f30;
+}
+
+/* Narrow host panels (VS Code side bar, ~400 px): stack with the viewport first. */
+@media (max-width: 640px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: auto;
+  }
+
+  .viewport-panel {
+    order: -1;
+    min-height: 50vh;
+  }
+
+  .sidebar {
+    overflow: visible;
+  }
+
+  .tree-panel,
+  .props-panel {
+    max-height: 40vh;
+    overflow: auto;
+  }
+}

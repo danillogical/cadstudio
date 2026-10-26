@@ -10,3 +10,4 @@ MUJOCO_LOG.TXT
 .env
 .env.*
 !.env.example
+ui/dist/

@@ -1,0 +1,254 @@
+import {
+  AmbientLight,
+  AxesHelper,
+  Box3,
+  Color,
+  DirectionalLight,
+  GridHelper,
+  Group,
+  PerspectiveCamera,
+  Scene,
+  Sphere,
+  Vector2,
+  Vector3,
+  WebGLRenderer,
+} from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { disposeScene, type LoadedScene } from "../scene/mapping";
+import { fitCamera, niceGridStep } from "./camera";
+import { pickPart } from "./pick";
+
+export const FOV_DEG = 45;
+const CLICK_SLOP_PX = 4;
+const BACKGROUND = new Color("#1e1e1e");
+const HIGHLIGHT = new Color("#ffb347");
+
+/** The viewport surface the controller drives; kept small so tests can fake it. */
+export interface SceneViewport {
+  setScene(scene: LoadedScene | null): void;
+  setHighlight(partId: string | null): void;
+}
+
+/**
+ * Three.js assembly viewport: Z up, millimetres, orbit/pan/zoom, a mm grid, axes and
+ * click-to-select. Geometry arrives already in assembly coordinates, so nothing is scaled.
+ */
+export class Viewport implements SceneViewport {
+  readonly renderer: WebGLRenderer;
+  readonly camera: PerspectiveCamera;
+  readonly scene = new Scene();
+  readonly controls: OrbitControls;
+
+  private readonly container: HTMLElement;
+  private readonly modelRoot = new Group();
+  private readonly overlay: HTMLElement;
+  private readonly resizeObserver: ResizeObserver;
+  private loaded: LoadedScene | null = null;
+  private grid: GridHelper | null = null;
+  private axes: AxesHelper | null = null;
+  private highlighted: string | null = null;
+  private pointerStart: { x: number; y: number; id: number } | null = null;
+  private disposed = false;
+
+  onPick: (partId: string | null) => void = () => {};
+
+  constructor(container: HTMLElement) {
+    this.container = container;
+    this.renderer = new WebGLRenderer({ antialias: true });
+    this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 2));
+    this.renderer.domElement.className = "viewport-canvas";
+    container.appendChild(this.renderer.domElement);
+
+    this.overlay = document.createElement("div");
+    this.overlay.className = "viewport-overlay";
+    container.appendChild(this.overlay);
+
+    this.camera = new PerspectiveCamera(FOV_DEG, 1, 0.1, 10000);
+    // Z up must be set before OrbitControls captures the camera basis.
+    this.camera.up.set(0, 0, 1);
+    this.camera.position.set(120, -120, 100);
+
+    this.scene.background = BACKGROUND;
+    this.scene.add(this.modelRoot);
+    this.scene.add(new AmbientLight(0xffffff, 0.75));
+    const key = new DirectionalLight(0xffffff, 1.4);
+    key.position.set(1, -1.4, 2);
+    const fill = new DirectionalLight(0xffffff, 0.6);
+    fill.position.set(-1.2, 1, 0.4);
+    this.scene.add(key, fill);
+
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = false;
+    this.controls.screenSpacePanning = true;
+    this.controls.addEventListener("change", () => this.render());
+
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(container);
+    this.resize();
+
+    this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown);
+    this.renderer.domElement.addEventListener("pointerup", this.onPointerUp);
+    globalThis.addEventListener("keydown", this.onKeyDown);
+    this.render();
+  }
+
+  /** Replace the scene; the previous one is disposed after the swap. */
+  setScene(loaded: LoadedScene | null): void {
+    const previous = this.loaded;
+    // A rebuild of the same model keeps the user's viewpoint; a different model refits.
+    const sameModel = loaded !== null && previous !== null && loaded.root.name === previous.root.name;
+    this.modelRoot.clear();
+    disposeScene(previous);
+    this.loaded = loaded;
+    this.highlighted = null;
+    if (loaded) {
+      this.modelRoot.add(loaded.root);
+      this.rebuildHelpers(loaded.bounds);
+      if (sameModel) this.updateClipping(loaded.bounds);
+      else this.fit();
+    } else {
+      this.rebuildHelpers(null);
+    }
+    this.render();
+  }
+
+  /** Keep the camera where it is but make sure the new bounds are not clipped. */
+  private updateClipping(bounds: Box3): void {
+    const distance = this.camera.position.distanceTo(this.controls.target);
+    const radius = bounds.isEmpty() ? 1 : bounds.getBoundingSphere(new Sphere()).radius;
+    this.camera.near = Math.max(distance / 1000, 0.01);
+    this.camera.far = Math.max(distance + radius * 4, this.camera.near * 2);
+    this.camera.updateProjectionMatrix();
+  }
+
+  /** Fit the camera to the current model, or to a default box when empty. */
+  fit(): void {
+    const bounds =
+      this.loaded && !this.loaded.bounds.isEmpty()
+        ? this.loaded.bounds.clone()
+        : new Box3(new Vector3(-50, -50, -50), new Vector3(50, 50, 50));
+    const aspect = this.camera.aspect || 1;
+    const fit = fitCamera(bounds, FOV_DEG, aspect);
+    this.camera.position.copy(fit.position);
+    this.camera.near = fit.near;
+    this.camera.far = fit.far;
+    this.camera.updateProjectionMatrix();
+    this.controls.target.copy(fit.target);
+    this.controls.update();
+    this.render();
+  }
+
+  setHighlight(partId: string | null): void {
+    if (this.highlighted === partId) return;
+    this.highlighted = partId;
+    for (const [id, object] of this.loaded?.parts ?? []) {
+      object.traverse((node) => {
+        const material = (node as { material?: unknown }).material;
+        const materials = Array.isArray(material) ? material : [material];
+        for (const entry of materials) {
+          const standard = entry as { emissive?: Color } | undefined;
+          if (!standard?.emissive) continue;
+          standard.emissive.copy(id === partId ? HIGHLIGHT : new Color(0x000000));
+        }
+      });
+    }
+    this.render();
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.resizeObserver.disconnect();
+    this.renderer.domElement.removeEventListener("pointerdown", this.onPointerDown);
+    this.renderer.domElement.removeEventListener("pointerup", this.onPointerUp);
+    globalThis.removeEventListener("keydown", this.onKeyDown);
+    this.controls.dispose();
+    this.modelRoot.clear();
+    disposeScene(this.loaded);
+    this.loaded = null;
+    this.renderer.dispose();
+    this.overlay.remove();
+    this.renderer.domElement.remove();
+  }
+
+  private rebuildHelpers(bounds: Box3 | null): void {
+    for (const helper of [this.grid, this.axes]) {
+      if (helper) {
+        helper.removeFromParent();
+        helper.geometry.dispose();
+        (helper.material as { dispose(): void }).dispose();
+      }
+    }
+    this.grid = null;
+    this.axes = null;
+
+    const size = bounds && !bounds.isEmpty() ? bounds.getSize(new Vector3()) : new Vector3(100, 100, 100);
+    const span = Math.max(size.x, size.y, size.z, 1);
+    const step = niceGridStep(span);
+    const cells = Math.max(Math.ceil(span / step) * 2, 10);
+    const gridSize = cells * step;
+    this.grid = new GridHelper(gridSize, cells, 0x6b6b6b, 0x3c3c3c);
+    // GridHelper lies in XZ (Y up); the model is Z up, so rotate it into XY.
+    this.grid.rotation.x = Math.PI / 2;
+    this.scene.add(this.grid);
+
+    const axesSize = Math.max(step * 5, span * 0.4);
+    this.axes = new AxesHelper(axesSize);
+    this.scene.add(this.axes);
+
+    this.overlay.textContent = `grid ${formatStep(step)} mm · X red · Y green · Z blue`;
+  }
+
+  private resize(): void {
+    const width = Math.max(this.container.clientWidth, 1);
+    const height = Math.max(this.container.clientHeight, 1);
+    this.renderer.setSize(width, height, false);
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+    this.render();
+  }
+
+  private render(): void {
+    if (this.disposed) return;
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private readonly onPointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0) return;
+    this.pointerStart = { x: event.clientX, y: event.clientY, id: event.pointerId };
+  };
+
+  private readonly onPointerUp = (event: PointerEvent): void => {
+    const start = this.pointerStart;
+    this.pointerStart = null;
+    if (!start || start.id !== event.pointerId) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > CLICK_SLOP_PX) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.onPick(pickPart(ndc, this.camera, this.modelRoot));
+  };
+
+  private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "f" && event.key !== "F") return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+    this.fit();
+  };
+}
+
+function formatStep(step: number): string {
+  return step >= 1 ? String(step) : step.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}

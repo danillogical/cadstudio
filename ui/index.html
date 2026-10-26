@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CADStudio</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="banner" class="banner" hidden></div>
+      <main class="layout">
+        <aside class="sidebar">
+          <section class="panel picker-panel">
+            <label for="model-picker">Model</label>
+            <select id="model-picker"></select>
+          </section>
+          <section class="panel tree-panel">
+            <h2>Parts</h2>
+            <div id="tree"></div>
+          </section>
+          <section class="panel props-panel">
+            <div id="props"></div>
+          </section>
+        </aside>
+        <section class="viewport-panel">
+          <div id="viewport" class="viewport"></div>
+          <button id="fit" type="button" title="Fit the model in view (F)">Fit</button>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
