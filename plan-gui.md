@@ -169,7 +169,7 @@ Dependency direction (enforced by a test in G1):
 | `GET /` | the built `ui/dist` |
 
 Rules:
-- Every non-health route requires `Authorization: Bearer <token>`, or the `?token=` query the server gives the browser on open.
+- Every `/v1/*` route except health requires `Authorization: Bearer <token>`, or the `?token=` query the server gives the browser on open. The compiled `ui/dist` files and fallback page are public build output and do not require a token; Host/Origin checks still apply. This G3a planner recommendation keeps browser reloads working after G3b removes the token from the address bar.
 - Requests whose `Host` isn't `127.0.0.1:<port>` or `localhost:<port>` are rejected.
 - Requests with an `Origin` other than the server's own are rejected.
 - Jobs on the same model or run queue one at a time, and read-only viewers are unlimited.
