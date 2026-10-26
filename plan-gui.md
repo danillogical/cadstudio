@@ -1,10 +1,12 @@
 # plan-gui.md: cadstudio GUI (browser + VS Code webview)
 
-**Status:** planned, not started.
+**Status:** G0 implemented and merged locally; automated merge gate passed; waiting for user gate H0.
 **Date:** 2026-10-25.
 **Started from:** `~/Downloads/plan-draft-gui.md`, adapted to the repo as it stands at `81649e6`.
 **Runs on:** webstudio.local, through packetd (Codex skill `packetd`, MCP server `http://127.0.0.1:7766/mcp`).
 **Used on:** the laptop (VS Code, Claude Code and Codex in its terminal).
+
+**G0 execution (2026-10-25):** packet `pk-czcd072f` and dependency repair `pk-x4hh8jyw` both ACCEPTED in round 1, squash-merged as `45be859` and `d66aef0`. The final merge gate passed: 1,474 Python/physics tests passed (12 skipped), 25 extension tests passed, the committed build stayed byte-identical, `uv.lock` stayed unchanged, the private-mirror scan passed, and npm audit reported zero vulnerabilities. H0 findings remain pending in `editor/vscode/README.md`; G1 follows H0.
 
 ## 0. Decision summary
 
