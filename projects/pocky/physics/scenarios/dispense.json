@@ -1,0 +1,56 @@
+{
+  "schema_version": "m4a-1",
+  "scenario_id": "pocky_dispense",
+  "fixture": "pocky_prototype",
+  "seed": 0,
+  "timestep_s": 6.25e-05,
+  "sampling_interval_s": 0.001,
+  "budgets": {
+    "max_steps": 128100,
+    "max_sim_time_s": 8.01,
+    "max_trace_rows": 100000,
+    "max_state_rows": 128100,
+    "max_state_bytes": 2147483648
+  },
+  "phases": [
+    {
+      "name": "reset",
+      "kind": "reset",
+      "initial": {
+        "crank_phi": 0.0,
+        "rod_x": -0.0,
+        "pusher_x": 0.0
+      }
+    },
+    {
+      "name": "settle",
+      "kind": "settle",
+      "duration_s": 3.0
+    },
+    {
+      "name": "actuate",
+      "kind": "actuate",
+      "actuator": "button",
+      "effort": 0.0,
+      "effort_end": -25.0,
+      "duration_s": 2.0
+    },
+    {
+      "name": "press_hold",
+      "kind": "actuate",
+      "actuator": "button",
+      "effort": -25.0,
+      "duration_s": 1.0
+    },
+    {
+      "name": "release",
+      "kind": "release",
+      "duration_s": 0.5
+    },
+    {
+      "name": "hold",
+      "kind": "hold",
+      "duration_s": 1.5
+    }
+  ]
+}

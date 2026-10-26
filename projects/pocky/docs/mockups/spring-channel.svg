@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1220" height="1020" viewBox="0 0 1220 1020" font-family="Helvetica, Arial, sans-serif">
+<defs><marker id="red" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker><marker id="green" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker><marker id="greenk" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2f7d3a"/></marker></defs>
+<rect width="1220" height="1020" fill="#fafafa"/>
+<text x="294.0" y="46.8" font-size="17" text-anchor="middle" fill="#222" font-weight="bold">Today: open channel (section)</text>
+<rect x="30.0" y="214.0" width="528.0" height="220.0" fill="#b9c6d3" stroke="#4a5a6a"/>
+<rect x="129.0" y="214.0" width="330.0" height="127.6" fill="#fff" stroke="#4a5a6a"/>
+<rect x="140.0" y="227.2" width="308.0" height="110.0" fill="#bfe8e6" stroke="#138a85" stroke-width="1.5"/>
+<line x1="148.8" y1="337.2" x2="175.2" y2="227.2" stroke="#138a85" stroke-width="1.2"/>
+<line x1="192.8" y1="337.2" x2="219.2" y2="227.2" stroke="#138a85" stroke-width="1.2"/>
+<line x1="236.8" y1="337.2" x2="263.2" y2="227.2" stroke="#138a85" stroke-width="1.2"/>
+<line x1="280.8" y1="337.2" x2="307.2" y2="227.2" stroke="#138a85" stroke-width="1.2"/>
+<line x1="324.8" y1="337.2" x2="351.2" y2="227.2" stroke="#138a85" stroke-width="1.2"/>
+<line x1="368.8" y1="337.2" x2="395.2" y2="227.2" stroke="#138a85" stroke-width="1.2"/>
+<line x1="412.8" y1="337.2" x2="439.2" y2="227.2" stroke="#138a85" stroke-width="1.2"/>
+<text x="294.0" y="291.0" font-size="12" text-anchor="middle" fill="#0b5e5a">spring 14 × 5</text>
+<rect x="30.0" y="99.6" width="528.0" height="114.4" fill="#a0612d" fill-opacity="0.25" stroke="#a0612d" stroke-dasharray="5 3"/>
+<text x="294.0" y="150.2" font-size="12" text-anchor="middle" fill="#6b3a12">bottom packet sits on the floor here</text>
+<text x="38.8" y="412.0" font-size="12" text-anchor="start" fill="#33475b">housing floor</text>
+<line x1="173.0" y1="231.6" x2="173.0" y2="192.0" stroke="#c62828" stroke-width="2.5" marker-end="url(#red)"/>
+<line x1="415.0" y1="231.6" x2="415.0" y2="192.0" stroke="#c62828" stroke-width="2.5" marker-end="url(#red)"/>
+<text x="294.0" y="372.4" font-size="13" text-anchor="middle" fill="#c62828">open top: nothing holds the spring down</text>
+<text x="902.0" y="46.8" font-size="17" text-anchor="middle" fill="#222" font-weight="bold">Proposed: lips (section)</text>
+<rect x="638.0" y="214.0" width="528.0" height="220.0" fill="#b9c6d3" stroke="#4a5a6a"/>
+<rect x="737.0" y="214.0" width="330.0" height="162.8" fill="#fff" stroke="#4a5a6a"/>
+<rect x="748.0" y="262.4" width="308.0" height="110.0" fill="#bfe8e6" stroke="#138a85" stroke-width="1.5"/>
+<line x1="756.8" y1="372.4" x2="783.2" y2="262.4" stroke="#138a85" stroke-width="1.2"/>
+<line x1="800.8" y1="372.4" x2="827.2" y2="262.4" stroke="#138a85" stroke-width="1.2"/>
+<line x1="844.8" y1="372.4" x2="871.2" y2="262.4" stroke="#138a85" stroke-width="1.2"/>
+<line x1="888.8" y1="372.4" x2="915.2" y2="262.4" stroke="#138a85" stroke-width="1.2"/>
+<line x1="932.8" y1="372.4" x2="959.2" y2="262.4" stroke="#138a85" stroke-width="1.2"/>
+<line x1="976.8" y1="372.4" x2="1003.2" y2="262.4" stroke="#138a85" stroke-width="1.2"/>
+<line x1="1020.8" y1="372.4" x2="1047.2" y2="262.4" stroke="#138a85" stroke-width="1.2"/>
+<text x="902.0" y="326.2" font-size="12" text-anchor="middle" fill="#0b5e5a">spring 14 × 5</text>
+<rect x="638.0" y="99.6" width="528.0" height="114.4" fill="#a0612d" fill-opacity="0.25" stroke="#a0612d" stroke-dasharray="5 3"/>
+<text x="902.0" y="150.2" font-size="12" text-anchor="middle" fill="#6b3a12">bottom packet sits on the floor here</text>
+<text x="646.8" y="412.0" font-size="12" text-anchor="start" fill="#33475b">housing floor</text>
+<polygon points="737.0,214.0 792.0,214.0 792.0,249.2 737.0,249.2" fill="#b9c6d3" stroke="#4a5a6a" stroke-width="1.5"/>
+<polygon points="1067.0,214.0 1012.0,214.0 1012.0,249.2 1067.0,249.2" fill="#b9c6d3" stroke="#4a5a6a" stroke-width="1.5"/>
+<text x="706.2" y="233.8" font-size="12" text-anchor="middle" fill="#1f3a56">lip</text>
+<text x="1097.8" y="233.8" font-size="12" text-anchor="middle" fill="#1f3a56">lip</text>
+<line x1="792.0" y1="214.0" x2="1012.0" y2="214.0" stroke="#2f7d3a" stroke-width="3" stroke-dasharray="6 4"/>
+<text x="902.0" y="236.0" font-size="12" text-anchor="middle" fill="#1d5a27">slot for the keel</text>
+<line x1="770.0" y1="260.2" x2="770.0" y2="251.4" stroke="#2e7d32" stroke-width="2.5" marker-end="url(#green)"/>
+<line x1="1034.0" y1="260.2" x2="1034.0" y2="251.4" stroke="#2e7d32" stroke-width="2.5" marker-end="url(#green)"/>
+<text x="902.0" y="407.6" font-size="13" text-anchor="middle" fill="#2e7d32">lips overhang each spring edge ~2 mm and hold it down</text>
+<text x="610.0" y="582.0" font-size="17" text-anchor="middle" fill="#222" font-weight="bold">Proposed, top view (packets removed)</text>
+<rect x="250.0" y="600.0" width="720.0" height="192.0" fill="#b9c6d3" stroke="#4a5a6a"/>
+<rect x="280.0" y="651.0" width="649.8" height="90.0" fill="#fff" stroke="#4a5a6a" stroke-dasharray="4 3"/>
+<rect x="580.0" y="654.0" width="349.8" height="84.0" fill="#bfe8e6" stroke="#138a85" stroke-dasharray="4 3"/>
+<line x1="598.0" y1="738.0" x2="598.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="628.0" y1="738.0" x2="628.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="658.0" y1="738.0" x2="658.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="688.0" y1="738.0" x2="688.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="718.0" y1="738.0" x2="718.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="748.0" y1="738.0" x2="748.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="778.0" y1="738.0" x2="778.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="808.0" y1="738.0" x2="808.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="838.0" y1="738.0" x2="838.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="868.0" y1="738.0" x2="868.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="898.0" y1="738.0" x2="898.0" y2="654.0" stroke="#138a85" stroke-width="1" stroke-dasharray="3 2"/>
+<rect x="580.0" y="654.0" width="18.0" height="84.0" fill="#138a85" fill-opacity="0.5" stroke="#138a85"/>
+<rect x="280.0" y="726.0" width="649.8" height="15.0" fill="#b9c6d3" stroke="#4a5a6a" stroke-width="1.5"/>
+<rect x="280.0" y="651.0" width="649.8" height="15.0" fill="#b9c6d3" stroke="#4a5a6a" stroke-width="1.5"/>
+<rect x="490.0" y="668.4" width="90.0" height="55.2" fill="#7fcf8a" stroke="#2f7d3a" stroke-width="1.5"/>
+<line x1="490.0" y1="696.0" x2="562.0" y2="696.0" stroke="#2f7d3a" stroke-width="2.5" marker-end="url(#greenk)"/>
+<text x="490.0" y="636.0" font-size="12" text-anchor="start" fill="#1d5a27">narrow keel rides in the slot</text>
+<line x1="538.0" y1="642.0" x2="532.0" y2="667.2" stroke="#1d5a27" stroke-width="1"/>
+<text x="589.0" y="759.0" font-size="12" text-anchor="middle" fill="#0b5e5a">keel pushes the spring's end pad</text>
+<text x="766.0" y="678.0" font-size="12" text-anchor="middle" fill="#0b5e5a">spring under the lips (dashed)</text>
+<text x="370.0" y="639.6" font-size="12" text-anchor="middle" fill="#1f3a56">lip</text>
+<text x="370.0" y="759.0" font-size="12" text-anchor="middle" fill="#1f3a56">lip</text>
+<text x="937.6" y="771.0" font-size="12" text-anchor="middle" fill="#33475b">seat</text>
+<line x1="250.0" y1="810.0" x2="970.0" y2="810.0" stroke="#888" stroke-width="1"/>
+<text x="610.0" y="825.0" font-size="12" text-anchor="middle" fill="#555">← rear of housing (spring slides in here before the slider)        pull direction / exit →</text>
+<text x="610.0" y="1004" font-size="12" text-anchor="middle" fill="#666">Sections cut across the channel looking along +X. Approximate mm from the current CAD; final numbers come from the model.</text>
+</svg>

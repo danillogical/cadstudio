@@ -469,9 +469,7 @@ def test_options_accept_the_approved_timesteps(p, timestep_s):
 
 
 @pytest.mark.parametrize("key", [
-    "packets",
     "capacity",
-    "packet_mass_kg",
     "contact_timeconst_s",
     "stop_timeconst_s",
     "friction",
@@ -481,6 +479,33 @@ def test_options_accept_the_approved_timesteps(p, timestep_s):
 def test_options_reject_unsupported_keys(key):
     with pytest.raises(ValueError):
         load_options({key: 1})
+
+
+@pytest.mark.parametrize("count", range(11))
+def test_options_accept_zero_to_capacity_packets(count):
+    assert load_options({"packets": count}).packets == count
+
+
+@pytest.mark.parametrize("table", [
+    {"packets": 11},
+    {"packets": 25},
+    {"packets": -1},
+    {"packets": True},
+    {"packets": 1.0},
+    {"packet_mass_kg": 0.007},
+    {"packets": 0, "packet_mass_kg": 0.007},
+    {"packets": 1, "packet_mass_kg": 0.0039},
+    {"packets": 1, "packet_mass_kg": 0.0101},
+    {"packets": 1, "packet_mass_kg": float("nan")},
+])
+def test_options_reject_unsupported_packet_choices(table):
+    with pytest.raises(ValueError):
+        load_options(table)
+
+
+@pytest.mark.parametrize("mass", [0.004, 0.007, 0.010])
+def test_options_accept_packet_mass_within_range_with_one_packet(mass):
+    assert load_options({"packets": 1, "packet_mass_kg": mass}).packet_mass_kg == mass
 
 
 @pytest.mark.parametrize("table", [
@@ -512,7 +537,8 @@ def test_options_reject_non_scalar_values(table):
 
 
 @pytest.mark.parametrize("kwargs, match", [
-    ({"packets": 1}, "packet"),
+    ({"packets": 11}, "tube capacity"),
+    ({"packets": -1}, "tube capacity"),
     ({"capacity": 25}, "capacity"),
     ({"button_fraction": 0.25}, "fraction 0"),
 ])
@@ -542,8 +568,12 @@ def test_lazy_physics_hooks(p):
     rod = next(body for body in optioned.bodies if body.body_id == "rod")
     assert rod.joint.spring.stiffness == pytest.approx(200.0)
 
+    loaded = PROJECT.physics_with_options("prototype", p, {"packets": 2})
+    assert isinstance(loaded, AssemblySpec)
+    assert {b.body_id for b in loaded.bodies} >= {"packet", "packet_02"}
+
     with pytest.raises(ValueError):
-        PROJECT.physics_with_options("prototype", p, {"packets": 1})
+        PROJECT.physics_with_options("prototype", p, {"packets": 11})
 
 
 # --------------------------------------------------------------------------- static

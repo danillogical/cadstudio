@@ -57,7 +57,7 @@ from .state_archive import (
     validate_layout,
     write_archive,
 )
-from .telemetry import PhaseTelemetry, TelemetryRecorder
+from .telemetry import PhaseTelemetry, TelemetryRecorder, body_force_command
 
 REPLAY_FORMAT = "m4b-1"
 OPTIONS_LOCK = "assembly_options.lock.toml"
@@ -641,6 +641,28 @@ def _phase_kind(scenario, name: str) -> str:
     raise ReplayError(f"phase {name!r} is not declared in the saved scenario")
 
 
+def _check_recorded_xfrc(state: dict, row: int, phase: str, expected: np.ndarray,
+                         allow_nonfinite: bool) -> None:
+    """Raise unless the archived xfrc_applied at ``row`` equals what the scenario applies."""
+    recorded = np.asarray(state["transition_xfrc_applied"][row], dtype=np.float64)
+    if recorded.shape == expected.shape and np.allclose(
+            recorded, expected, rtol=0.0, atol=0.0, equal_nan=allow_nonfinite):
+        return
+    if recorded.shape != expected.shape:
+        raise ReplayError(f"row {row} (phase {phase!r}): recorded xfrc_applied shape "
+                          f"{recorded.shape} != expected {expected.shape}")
+    bodies = [str(v) for v in state["body_names"]] if "body_names" in state else []
+    bad = np.argwhere(~np.isclose(recorded, expected, rtol=0.0, atol=0.0,
+                                  equal_nan=allow_nonfinite))
+    details = []
+    for body, comp in bad[:3]:
+        label = bodies[int(body)] if int(body) < len(bodies) else str(int(body))
+        details.append(f"body {label!r} component {int(comp)}: expected "
+                       f"{float(expected[body, comp])!r}, recorded {float(recorded[body, comp])!r}")
+    raise ReplayError(f"row {row} (phase {phase!r}): recorded xfrc_applied differs from the "
+                      f"scenario-applied force ({len(bad)} entries; " + "; ".join(details) + ")")
+
+
 def _replay_steps(mujoco, model, verified: VerifiedRun, *, start_row: int,
                   deadline: float | None = None) -> dict:
     """Restore ``start_row`` and replay every later recorded transition with real mj_step."""
@@ -672,6 +694,7 @@ def _replay_steps(mujoco, model, verified: VerifiedRun, *, start_row: int,
     if start_row == 0:
         recorder.record_initial(phase_names[0])
     replayed_rows = [np.array(state["integration_state"][start_row])]
+    allow_nonfinite = verified.summary.get("status") != "PASS"
     for p in range(1, len(phase_names)):
         indices = [k for k in range(rows) if int(phase_index[k]) == p and k > start_row]
         if not indices:
@@ -683,6 +706,7 @@ def _replay_steps(mujoco, model, verified: VerifiedRun, *, start_row: int,
                                   requested_steps=len(indices))
         progress.actuator = phase_spec.actuator
         progress.requested_effort = phase_spec.effort
+        progress.requested_effort_end = phase_spec.effort_end
         ctrl = np.asarray(state["transition_ctrl"][indices[0]])
         ctrl_map = {name: float(ctrl[i])
                     for i, name in enumerate([str(v) for v in state["actuator_names"]])}
@@ -692,19 +716,44 @@ def _replay_steps(mujoco, model, verified: VerifiedRun, *, start_row: int,
             bounded[phase_spec.actuator] = max(
                 -float(record["max_effort"]),
                 min(float(record["max_effort"]), float(phase_spec.effort or 0.0)))
+        phase_rows = [k for k in range(rows) if int(phase_index[k]) == p]
+        plan_steps = int(next(item["steps"] for item in plan["phases"]
+                              if item["name"] == phase_names[p]))
+        # An external body force is recomputed from the scenario, never read from the archive.
+        force_at = body_force_command(mujoco, model, phase_spec, plan_steps)
+        if force_at is not None:
+            progress.body_force_body = phase_spec.body_force.body
+            progress.requested_force_n = phase_spec.body_force.force_n
+            progress.requested_force_end_n = phase_spec.body_force.force_end_n
         recorder.begin_phase(progress, ctrl_map, bounded)
+        ramp = None
+        if (phase_spec.kind == "actuate" and phase_spec.effort_end is not None
+                and phase_spec.actuator in solver["actuators"]):
+            record = solver["actuators"][phase_spec.actuator]
+            names = [str(v) for v in state["actuator_names"]]
+            ramp = (names.index(phase_spec.actuator), float(record["gear"]),
+                    float(record["max_effort"]))
         for k in indices:
             if deadline is not None and time.perf_counter() > deadline:
                 raise ReplayError("replay wall budget exceeded before a step")
+            # Outside body_force phases the runner applies zeros, so the archive must hold zeros.
+            expected_xfrc = (force_at(k - phase_rows[0]) if force_at is not None
+                             else np.zeros((int(model.nbody), 6), dtype=np.float64))
+            if "transition_xfrc_applied" in state:
+                _check_recorded_xfrc(state, k, phase_names[p], expected_xfrc, allow_nonfinite)
             ok = recorder.step_with_transition(
                 ctrl=state["transition_ctrl"][k],
                 qfrc_applied=state["transition_qfrc_applied"][k],
-                xfrc_applied=(state["transition_xfrc_applied"][k]
+                xfrc_applied=(expected_xfrc if force_at is not None
+                              else state["transition_xfrc_applied"][k]
                               if "transition_xfrc_applied" in state else None),
                 mocap_pos=(state["transition_mocap_pos"][k]
                            if "transition_mocap_pos" in state else None),
                 mocap_quat=(state["transition_mocap_quat"][k]
                             if "transition_mocap_quat" in state else None),
+                effort_by_actuator=(None if ramp is None else {phase_spec.actuator: max(
+                    -ramp[2], min(ramp[2],
+                                  float(state["transition_ctrl"][k][ramp[0]]) * ramp[1]))}),
             )
             replayed_rows.append(np.array(get_native_state(mujoco, model, data)))
             if not ok:

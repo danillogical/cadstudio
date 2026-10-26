@@ -67,6 +67,9 @@ from projects.pocky.params import Params
 PETG_FRICTION = (0.40, 0.005, 0.0001)
 FLOOR_FRICTION = (0.50, 0.005, 0.0001)
 PETG_PRIORITY = 0
+#: Wrapped packet: mu 0.30 at priority 1, so packet<->PETG and packet<->packet resolve to 0.30.
+PACKET_FRICTION = (0.30, 0.005, 0.0001)
+PACKET_PRIORITY = 1
 #: Fidelity limits from the approved plan: 0.5 mm non-critical coverage, 0.02 mm critical.
 COVERAGE_GAP_MM = 0.5
 CRITICAL_TOL_MM = 0.02
@@ -1601,3 +1604,13 @@ def floor_collider(p: Params) -> ColliderSpec:
     return _b("floor_box", (-200.0, 200.0, -200.0, 200.0, CHASSIS_Z0 - 1.0, CHASSIS_Z0),
               "analytic floor fixture, top at -19.2 mm", role="mount",
               friction=FLOOR_FRICTION)
+
+
+def packet_collider(p: Params, lift_mm: float = 0.0) -> ColliderSpec:
+    """One rigid packet box (165 x 55 x 5.2 mm), underside at ``z = lift_mm``, centred in X and Y."""
+    k = p.packet
+    return _b("packet_box",
+              (-k.length / 2.0, k.length / 2.0, -k.width / 2.0, k.width / 2.0,
+               lift_mm, lift_mm + k.height),
+              "rigid packet proxy, mu 0.30 priority 1", role="packet",
+              friction=PACKET_FRICTION, priority=PACKET_PRIORITY)

@@ -122,6 +122,8 @@ class StepObservation:
     phase_name: str
     phase_kind: str
     ctrl_zero: bool
+    # ctrl_zero reflects actuator ctrl only: an external ``body_force`` (xfrc_applied, e.g. an
+    # operator's hand) is not actuator input and never makes it False.
     bodies: Mapping[str, ObservedBody]
     contacts: tuple[ObservedContact, ...]
     ctrl_max_abs: float = 0.0

@@ -221,7 +221,19 @@ def resolve_references(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
             raise ScenarioError(
                 f"{where}: event_verdict requires a supported_presentation event, "
                 f"{check.event!r} is {event.kind!r}")
+    free_bodies = {b.body_id for b in spec.bodies
+                   if b.joint is None and not b.fixed_to_world}
     for phase in scenario.phases:
+        if phase.body_force is not None:
+            if phase.body_force.body not in bodies:
+                raise ScenarioError(f"scenario phase {phase.name!r}: body_force names "
+                                    f"unknown body {phase.body_force.body!r}")
+            if phase.body_force.body not in free_bodies:
+                raise ScenarioError(f"scenario phase {phase.name!r}: body_force body "
+                                    f"{phase.body_force.body!r} is not a free body")
+            vectors = (phase.body_force.force_n, phase.body_force.force_end_n or ())
+            if not all(math.isfinite(v) for vec in vectors for v in vec):
+                raise ScenarioError(f"scenario phase {phase.name!r}: non-finite body_force")
         if phase.kind != "actuate":
             continue
         if phase.actuator not in actuators:
@@ -230,6 +242,8 @@ def resolve_references(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
         actuator = actuators[phase.actuator]
         if phase.effort is not None and not math.isfinite(phase.effort):
             raise ScenarioError(f"scenario phase {phase.name!r}: non-finite effort")
+        if phase.effort_end is not None and not math.isfinite(phase.effort_end):
+            raise ScenarioError(f"scenario phase {phase.name!r}: non-finite effort_end")
         _ = actuator  # bounds are enforced by the runner and the emitted ctrlrange
 
 

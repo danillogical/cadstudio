@@ -162,6 +162,27 @@ class Snapshot:
                 "hash": self.hash}
 
 
+def body_force_command(mujoco, model, phase: "PhaseSpec", steps: int):
+    """``force_at(step) -> (nbody, 6)`` xfrc_applied for a ``body_force`` phase, else ``None``.
+
+    The force is world-frame at the body COM (MuJoCo's ``xfrc_applied`` point); torque is zero.
+    Replay recomputes it through this function, so run and replay cannot disagree.
+    """
+    if phase.body_force is None:
+        return None
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, phase.body_force.body)
+    if body_id < 0:
+        raise ValueError(f"model has no body {phase.body_force.body!r}")
+    nbody = int(model.nbody)
+
+    def force_at(step: int):
+        xfrc = np.zeros((nbody, 6), dtype=np.float64)
+        xfrc[body_id, :3] = phase.body_force.force_at(step, steps)
+        return xfrc
+
+    return force_at
+
+
 @dataclass
 class PhaseTelemetry:
     name: str
@@ -175,11 +196,26 @@ class PhaseTelemetry:
     complete: bool = True
     actuator: str | None = None
     requested_effort: float | None = None
+    requested_effort_end: float | None = None
+    body_force_body: str | None = None
+    requested_force_n: tuple[float, float, float] | None = None
+    requested_force_end_n: tuple[float, float, float] | None = None
     effort_units: str = ""
     ctrl_requested: float | None = None
     ctrl_effective_peak: float | None = None
 
     def to_dict(self) -> dict:
+        out = self._base_dict()
+        if self.requested_effort_end is not None:
+            out["requested_effort_end"] = self.requested_effort_end
+        if self.requested_force_n is not None:
+            out["body_force_body"] = self.body_force_body
+            out["requested_force_n"] = list(self.requested_force_n)
+            if self.requested_force_end_n is not None:
+                out["requested_force_end_n"] = list(self.requested_force_end_n)
+        return out
+
+    def _base_dict(self) -> dict:
         return {
             "name": self.name, "kind": self.kind,
             "requested_duration_s": self.requested_duration_s,
@@ -304,6 +340,8 @@ class TelemetryRecorder:
         self._phase_names: list[str] = []
         self._warned: set[str] = set()
         self._ctrl_by_actuator: dict[str, float] = {}
+        self._command_at = None
+        self._force_at = None
         self._effort_by_actuator: dict[str, float] = {}
         self._effort_units = dict(effort_units)
         self.max_contact_rows = max_contact_rows
@@ -594,14 +632,22 @@ class TelemetryRecorder:
 
     # ------------------------------------------------------------------ phases
     def begin_phase(self, phase: PhaseTelemetry, ctrl_by_actuator: dict[str, float],
-                    effort_by_actuator: dict[str, float]) -> None:
+                    effort_by_actuator: dict[str, float], command_at=None,
+                    force_at=None) -> None:
         """``effort_by_actuator`` is the requested effort after the actuator's own bound.
 
         The runner clamps to ``ActuatorSpec.max_effort`` here, so a million-unit request is
         expected to transmit exactly the declared bound; telemetry is never rewound to look
-        like the unclipped request.
+        like the unclipped request. ``command_at(step) -> (ctrl, effort)`` supplies the
+        per-step command of a ramped phase; ``None`` keeps the constant command.
+        ``force_at(step) -> (nbody, 6)`` array supplies the external ``xfrc_applied`` of a
+        ``body_force`` phase; ``xfrc_applied`` is zeroed at every phase boundary.
         """
         self._phase = phase
+        self._command_at = command_at
+        self._force_at = force_at
+        if self.data.xfrc_applied.size:
+            self.data.xfrc_applied[:] = 0.0
         self._phase_names.append(phase.name)
         if phase.kind == "actuate" and phase.actuator:
             self.telemetry.commanded_actuators.add(phase.actuator)
@@ -812,18 +858,29 @@ class TelemetryRecorder:
             ctrl_vector = np.zeros(self.model.nu, dtype=np.float64)
             requested: dict[str, float] = {}
             stored: dict[str, float] = {}
+            if self._command_at is not None:
+                self._ctrl_by_actuator, self._effort_by_actuator = self._command_at(
+                    self._phase.actual_steps)
             for name, actuator_id, _, _, _ in self.actuators:
                 value = self._ctrl_by_actuator.get(name, 0.0)
                 ctrl_vector[actuator_id] = value
                 requested[name] = value
                 stored[name] = value
+            xfrc = (None if self._force_at is None
+                    else self._force_at(self._phase.actual_steps))
             if not self._one_step(ctrl_vector=ctrl_vector, requested=requested,
-                                  stored=stored):
+                                  stored=stored, xfrc_applied=xfrc):
                 return
 
     def step_with_transition(self, *, ctrl, qfrc_applied=None, xfrc_applied=None,
-                             mocap_pos=None, mocap_quat=None) -> bool:
-        """Replay one step with recorded transition inputs (ctrl/applied/mocap)."""
+                             mocap_pos=None, mocap_quat=None,
+                             effort_by_actuator=None) -> bool:
+        """Replay one step with recorded transition inputs (ctrl/applied/mocap).
+
+        ``effort_by_actuator`` replaces the expected bounded effort for this step (ramps).
+        """
+        if effort_by_actuator is not None:
+            self._effort_by_actuator = dict(effort_by_actuator)
         if self._phase is None:
             raise RuntimeError("step_with_transition() called without begin_phase()")
         ctrl_vector = np.asarray(ctrl, dtype=np.float64)

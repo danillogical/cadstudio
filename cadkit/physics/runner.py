@@ -62,6 +62,7 @@ from .state_archive import (
 from .telemetry import (
     PhaseTelemetry,
     TelemetryRecorder,
+    body_force_command,
     state_hash,
     write_contacts_csv,
     write_state_archive,
@@ -638,8 +639,9 @@ def _effort_units(spec, actuator) -> str:
     return "N m" if body.joint.kind == "hinge" else "N"
 
 
-def _phase_command(spec, phase: PhaseSpec) -> tuple[dict[str, float], dict[str, float],
-                                                    PhaseTelemetry]:
+def _phase_command(spec, phase: PhaseSpec, steps: int = 1) -> tuple[
+        dict[str, float], dict[str, float], PhaseTelemetry]:
+    """Step-0 ctrl, bounded effort and phase telemetry; a ramp is applied by ``_ramp_command``."""
     actuators = {a.actuator_id: a for a in spec.actuators}
     effort_units = {a.actuator_id: _effort_units(spec, a) for a in spec.actuators}
     ctrl = {name: 0.0 for name in actuators}
@@ -648,14 +650,15 @@ def _phase_command(spec, phase: PhaseSpec) -> tuple[dict[str, float], dict[str, 
                               requested_duration_s=phase.duration_s)
     if phase.kind == "actuate":
         actuator = actuators[phase.actuator]
-        requested = float(phase.effort)
+        requested = float(phase.effort_at(0, steps))
         # A positive requested generalized effort always drives the joint positively,
         # whatever the gear sign. ctrl is the motor-side quantity, hence effort/gear.
         ctrl[actuator.actuator_id] = requested / actuator.gear
         bounded = max(-actuator.max_effort, min(actuator.max_effort, requested))
         bounded_effort[actuator.actuator_id] = bounded
         progress.actuator = actuator.actuator_id
-        progress.requested_effort = requested
+        progress.requested_effort = float(phase.effort)
+        progress.requested_effort_end = phase.effort_end
         progress.effort_units = effort_units[actuator.actuator_id]
         progress.ctrl_requested = ctrl[actuator.actuator_id]
     else:
@@ -663,7 +666,28 @@ def _phase_command(spec, phase: PhaseSpec) -> tuple[dict[str, float], dict[str, 
         progress.requested_effort = 0.0
         progress.effort_units = ""
         progress.ctrl_requested = 0.0
+    if phase.body_force is not None:
+        progress.body_force_body = phase.body_force.body
+        progress.requested_force_n = phase.body_force.force_n
+        progress.requested_force_end_n = phase.body_force.force_end_n
     return ctrl, bounded_effort, progress
+
+
+def _ramp_command(spec, phase: PhaseSpec, steps: int):
+    """``command_at(step) -> (ctrl, bounded_effort)`` for a ramped actuate phase, else ``None``."""
+    if phase.kind != "actuate" or phase.effort_end is None:
+        return None
+    actuator = next(a for a in spec.actuators if a.actuator_id == phase.actuator)
+    names = [a.actuator_id for a in spec.actuators]
+
+    def command_at(step: int):
+        requested = float(phase.effort_at(step, steps))
+        ctrl = {name: 0.0 for name in names}
+        ctrl[actuator.actuator_id] = requested / actuator.gear
+        bounded = max(-actuator.max_effort, min(actuator.max_effort, requested))
+        return ctrl, {actuator.actuator_id: bounded}
+
+    return command_at
 
 
 def _execute(mujoco, model, data, spec, scenario: ScenarioSpec, plan: RunPlan,
@@ -685,9 +709,12 @@ def _execute(mujoco, model, data, spec, scenario: ScenarioSpec, plan: RunPlan,
         # initial accumulation; declared bound reasons are emitted once by evaluation.
         recorder.telemetry.initial_rejected = True
     for planned in (() if recorder.telemetry.initial_rejected else plan.phases[1:]):
-        ctrl, bounded, progress = _phase_command(spec, planned.phase)
+        ctrl, bounded, progress = _phase_command(spec, planned.phase, planned.steps)
         progress.requested_steps = planned.steps
-        recorder.begin_phase(progress, ctrl, bounded)
+        recorder.begin_phase(progress, ctrl, bounded,
+                             command_at=_ramp_command(spec, planned.phase, planned.steps),
+                             force_at=body_force_command(mujoco, model, planned.phase,
+                                                         planned.steps))
         recorder.step(planned.steps)
         recorder.end_phase()
         if recorder.telemetry.stopped:

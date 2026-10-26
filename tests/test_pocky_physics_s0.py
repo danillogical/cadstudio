@@ -500,7 +500,7 @@ def test_base_cases_have_no_options_file_and_defaults_apply():
 @pytest.mark.parametrize("table", [
     {"spring_stiffness_n_m": 300.0},
     {"timestep_s": 2.0e-3},
-    {"spring_stiffness_n_m": 500.0, "timestep_s": 1.0e-3, "packets": 1},
+    {"spring_stiffness_n_m": 500.0, "timestep_s": 1.0e-3, "packets": 11},
 ])
 def test_options_outside_the_approved_axes_are_rejected(table):
     with pytest.raises(ValueError):

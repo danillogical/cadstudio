@@ -20,7 +20,11 @@ def _ghost_meshes(p):
 
 
 def _physics(model_name, p):
-    """Lazy physics assembly: only the printed ``prototype`` model has one."""
+    """Lazy physics assembly: the ``prototype`` and ``syringe`` models have one."""
+    if model_name == "syringe":
+        from .physics.syringe_assembly import syringe_assembly
+
+        return syringe_assembly(p)
     if model_name != "prototype":
         return None
     from .physics.assembly import prototype_assembly
@@ -29,17 +33,38 @@ def _physics(model_name, p):
 
 
 def _physics_with_options(model_name, p, options):
-    """Strict option path for ``cad physics run``; unsupported options are rejected."""
-    if model_name != "prototype":
+    """Strict option path for ``cad physics run``; unsupported options are rejected.
+
+    The ``syringe`` model reuses the prototype's option keys: ``button_actuator`` enables its
+    ``pull`` actuator and ``chassis_clamped`` clamps its housing. ``separator`` is syringe-only.
+    """
+    if model_name not in ("prototype", "syringe"):
         return None
-    from .physics.assembly import prototype_assembly
     from .physics.options import load_options
 
     opts = load_options(options)
+    if model_name == "syringe":
+        from .physics.syringe_assembly import syringe_assembly
+
+        return syringe_assembly(
+            p, spring_stiffness_n_m=opts.spring_stiffness_n_m, timestep_s=opts.timestep_s,
+            contact_timeconst_s=opts.contact_timeconst_s, stop_timeconst_s=opts.stop_timeconst_s,
+            pull_actuator=opts.button_actuator, packets=opts.packets,
+            packet_mass_kg=opts.packet_mass_kg, housing_clamped=opts.chassis_clamped,
+            separator=opts.separator,
+        )
+    if options is not None and "separator" in options:
+        raise ValueError(
+            "assembly option 'separator' applies to the syringe model only; the prototype's "
+            "separator is its fixed lip blade"
+        )
+    from .physics.assembly import prototype_assembly
+
     return prototype_assembly(
         p, spring_stiffness_n_m=opts.spring_stiffness_n_m, timestep_s=opts.timestep_s,
         contact_timeconst_s=opts.contact_timeconst_s, stop_timeconst_s=opts.stop_timeconst_s,
-        button_actuator=opts.button_actuator,
+        button_actuator=opts.button_actuator, packets=opts.packets,
+        packet_mass_kg=opts.packet_mass_kg, chassis_clamped=opts.chassis_clamped,
     )
 
 

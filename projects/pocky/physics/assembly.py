@@ -19,10 +19,10 @@ idealizations listed in ``docs/mujoco-m5a-1-adapter-static-report.md``.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from build123d import Box, Pos
+from build123d import Box, Pos, Rot
 
 from cadkit.physics.schema import (
     ActuatorSpec,
@@ -37,10 +37,14 @@ from cadkit.physics.schema import (
 
 from projects.pocky.geometry.linkage import (
     linkage_from,
+    packet_solids,
     phi_for_button_fraction,
     pose_at_phi,
 )
+from projects.pocky.geometry.packet import packet as packet_solid
 from projects.pocky.geometry.prototype import (
+    BLADE_BITE,
+    BLADE_T,
     CHASSIS_Z0,
     DEFAULT_GAP,
     PROTOTYPE_SPRING,
@@ -73,6 +77,10 @@ VALID_CONTACT_TIMECONST_S = 2.5e-4
 VALID_TIMESTEP_S = 6.25e-5
 #: Button force bound: spring at full press is 500 N/m x 26.094 mm = 13.05 N; 25 N adds ~2x margin for friction and contacts.
 BUTTON_MAX_EFFORT_N = 25.0
+#: Seating lift under the packet: 0, as the exact-solid overlap with every part is 0 at the CAD seat.
+PACKET_SEAT_LIFT_MM = 0.0
+#: Numerical seating clearance for the tilted packet 2, along its normal (0.001 mm; plan 5.1).
+TILT_SEAT_CLEARANCE_MM = 0.001
 
 
 def _source(note: str) -> Source:
@@ -134,6 +142,37 @@ def expected_quarter_stroke_mm(p: Params) -> tuple[float, float]:
             reset_state(p, 0.75).pusher_x_m * 1000.0)
 
 
+def tilted_packet_frames(p: Params, count: int) -> list[Frame]:
+    """Body frames (assembly mm / deg) for packets 1..``count``; the bottom packet is identity.
+
+    Packet 2 rests on packet 1's rear top edge and the lip blade's rear edge, so its underside
+    is tilted about Y. Packets 3..N are translated along that tilted normal from the already
+    seated packet 2 (its origin is counted once). ``count=0`` returns no frames.
+    """
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError(f"packet count must be a non-negative int, got {count!r}")
+    if count == 0:
+        return []
+    k = p.packet
+    blade_rear_x = k.length / 2.0 - BLADE_BITE
+    blade_top_z = p.separator.gap + BLADE_T
+    rear_x, rear_z = -k.length / 2.0, k.height
+    angle = math.atan2(blade_top_z - rear_z, blade_rear_x - rear_x)
+    deg = math.degrees(angle)
+    normal = (-math.sin(angle), 0.0, math.cos(angle))
+    seat = (Pos(rear_x, 0.0, rear_z) * Rot(0.0, -deg, 0.0) * Pos(-rear_x, 0.0, 0.0)).position
+    base = (seat.X + normal[0] * TILT_SEAT_CLEARANCE_MM,
+            seat.Y,
+            seat.Z + normal[2] * TILT_SEAT_CLEARANCE_MM)
+    frames = [Frame()]
+    for i in range(1, count):
+        step = (i - 1) * k.height
+        frames.append(Frame(
+            pos_mm=(base[0] + step * normal[0], base[1], base[2] + step * normal[2]),
+            rot_deg=(0.0, -deg, 0.0)))
+    return frames
+
+
 def _petg_part(part_id: str, shape, p: Params, *, role: str = "structure",
                colliders_=(), note: str = "CAD solid x PETG density") -> PartSpec:
     return PartSpec(
@@ -154,11 +193,14 @@ def prototype_assembly(
     contact_timeconst_s: float = CONTACT_TIMECONST_S,
     stop_timeconst_s: float = STOP_TIMECONST_S,
     button_actuator: bool = False,
+    chassis_clamped: bool = False,
 ) -> AssemblySpec:
     """Build the assembled prototype scene at CAD button fraction 0.
 
-    Loaded packets and the 25-capacity variant are deliberately rejected: the baseline has
-    zero packets and those variants need a later bounded planning approval. Static
+    The baseline has zero packets; ``packets=1`` adds the bottom packet as one free rigid box
+    resting on the housing floor. ``packets=2..capacity_test`` add ``packet_02``, ``packet_03``,
+    ... as free boxes on the tilted seat of plan 5.1 (see :func:`tilted_packet_frames`). The
+    25-capacity variant is rejected: it needs a later bounded planning approval. Static
     preflight uses :func:`projects.pocky.physics.support.assembly_solids`.
     """
     if button_fraction != 0.0:
@@ -166,11 +208,13 @@ def prototype_assembly(
             "the runtime scene is built at CAD button fraction 0; the reset coordinates "
             "carry the other fractions (see reset_state)"
         )
-    if packets != 0:
+    max_packets = int(p.magazine.capacity_test)
+    if isinstance(packets, bool) or not isinstance(packets, int) or not 0 <= packets <= max_packets:
         raise ValueError(
-            "loaded packets are not supported in the M5a-1 adapter/static increment; "
-            "packet seating and stacks need a later bounded planning approval"
+            f"packets must be an integer in 0..{max_packets} (the tube capacity), got {packets!r}"
         )
+    if not (math.isfinite(packet_mass_kg) and 0.004 <= packet_mass_kg <= 0.010):
+        raise ValueError(f"packet_mass_kg must be in [0.004, 0.010] kg, got {packet_mass_kg!r}")
     if capacity is not None:
         raise ValueError(
             "the 25-capacity tube is not supported in the M5a-1 adapter/static increment; "
@@ -257,6 +301,34 @@ def prototype_assembly(
         ),
     ]
 
+    packet_bodies: tuple[BodySpec, ...] = ()
+    if packets >= 1:
+        frames = tilted_packet_frames(p, packets)
+        built = []
+        for index, frame in enumerate(frames, start=1):
+            name = "packet" if index == 1 else f"packet_{index:02d}"
+            if index == 1:
+                # The CAD bottom packet (shift 0) plus the seating lift, which is 0 (exact overlap is 0).
+                shape = Pos(0.0, 0.0, PACKET_SEAT_LIFT_MM) * packet_solids(p, 0.0)["packet"]
+                note = "bottom packet at its CAD seat in the magazine, free body"
+            else:
+                shape = frame.location() * packet_solid(p)
+                note = ("packet on the tilted seat of plan 5.1: rear on packet 1's top edge, front "
+                        "on the lip blade's rear edge" if index == 2
+                        else "packet stacked on packet 2 along its tilted normal, free body")
+            box = colliders.packet_collider(p, PACKET_SEAT_LIFT_MM)
+            if index > 1:
+                # Collider ids are scene-global geom names; packet 1 keeps "packet_box".
+                box = replace(box, collider_id=f"{name}_box")
+            part = PartSpec(
+                part_id=name, shape=shape, colliders=(box,), role="packet",
+                mass_kg=float(packet_mass_kg),
+                source=Source("assumed", "rigid wrapped-packet proxy; 4-10 g range, no measurement"),
+            )
+            built.append(BodySpec(body_id=name, parts=(part,), frame=frame,
+                                  source=_source(note)))
+        packet_bodies = tuple(built)
+
     crank_joint = JointSpec(
         joint_id="crank_phi", body_id="crank", kind="hinge",
         axis=(0.0, 0.0, 1.0),
@@ -288,7 +360,13 @@ def prototype_assembly(
                  source=_source("independent lip; hook rails 0.15 mm behind the body bars"),
                  fidelity=colliders.lip_fidelity(p, link)),
         BodySpec(body_id="chassis", parts=tuple(chassis_parts),
-                 source=_source("base frame; pivot peg and B insert welded to it"),
+                 # Opt-in restraint; the default free chassis leaves the scene unchanged.
+                 fixed_to_world=chassis_clamped,
+                 fixture="diagnostic_fixture" if chassis_clamped else "none",
+                 source=_source(
+                     "base frame; pivot peg and B insert welded to it; chassis clamped to the "
+                     "table (user-declared boundary condition)" if chassis_clamped
+                     else "base frame; pivot peg and B insert welded to it"),
                  fidelity=colliders.chassis_fidelity(p, link)),
         BodySpec(body_id="crank", parts=tuple(crank_parts), parent="chassis",
                  joint=crank_joint,
@@ -301,6 +379,7 @@ def prototype_assembly(
                  joint=pusher_joint,
                  source=_source("pusher carriage, neck and bullnose"),
                  fidelity=colliders.pusher_fidelity(p, link, rest)),
+        *packet_bodies,
         BodySpec(body_id="floor_world", parts=tuple(floor_parts), fixed_to_world=True,
                  fixture="analytic_fixture",
                  source=_source("legitimate analytic floor; top z = -19.2 mm")),
@@ -318,7 +397,9 @@ def prototype_assembly(
         friction=colliders.PETG_FRICTION,
         contact_timeconst_s=contact_timeconst_s,
         contact_dampratio=1.0,
-        source=_source("original CAD assembly at button fraction 0; no packets"),
+        source=_source("original CAD assembly at button fraction 0; "
+                       + ("no packets" if packets == 0 else "one bottom packet" if packets == 1
+                          else f"{packets} packets on the tilted seat")),
     )
 
 

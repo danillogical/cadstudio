@@ -32,6 +32,7 @@ ACCEPTANCE_SCHEMA_VERSION = SCHEMA_VERSION
 
 PHASE_KINDS = ("reset", "settle", "actuate", "release", "hold")
 TIMED_PHASE_KINDS = ("settle", "actuate", "release", "hold")
+BODY_FORCE_PHASE_KINDS = ("actuate", "release", "hold")
 CHECK_KINDS = (
     "joint_displacement",
     "return_displacement",
@@ -273,12 +274,46 @@ class BudgetSpec:
 
 
 @dataclass(frozen=True)
+class BodyForceSpec:
+    """An external world-frame force on one free body, applied at its COM for a whole phase.
+
+    The force is ``force_n`` (N), or a linear ramp ``force_n`` to ``force_end_n`` across the
+    phase with the same ``(k+1)/N`` convention as ``effort_end``. It is not actuator input.
+    """
+
+    body: str
+    force_n: tuple[float, float, float]
+    force_end_n: tuple[float, float, float] | None = None
+
+    def force_at(self, step: int, steps: int) -> tuple[float, float, float]:
+        """Force at 0-based ``step`` of ``steps``; the last step is exactly ``force_end_n``."""
+        if self.force_end_n is None:
+            return self.force_n
+        if step + 1 >= steps:
+            return self.force_end_n
+        frac = (step + 1) / steps
+        return tuple(a + (b - a) * frac for a, b in zip(self.force_n, self.force_end_n))
+
+    def to_dict(self) -> dict:
+        out: dict = {"body": self.body, "force_n": list(self.force_n)}
+        if self.force_end_n is not None:
+            out["force_end_n"] = list(self.force_end_n)
+        return out
+
+
+@dataclass(frozen=True)
 class PhaseSpec:
     """One declared phase.
 
     A ``reset`` phase carries the only positions this runner may ever write; it must be first
     and unique. Every other phase is timed and its duration must resolve to at least one
     whole step at the scenario timestep.
+
+    ``body_force`` (optional) applies an external force to a free body through
+    ``data.xfrc_applied``. It is allowed on ``actuate``, ``hold`` and ``release`` phases, so an
+    operator's hand can act while the actuator input is zero (a ``release`` or ``hold`` phase
+    with ``body_force`` still has zero actuator input). It is rejected on ``reset`` and
+    ``settle``. The force is cleared at every phase boundary.
     """
 
     name: str
@@ -287,6 +322,14 @@ class PhaseSpec:
     initial: tuple[tuple[str, float], ...] = ()
     actuator: str | None = None
     effort: float | None = None
+    effort_end: float | None = None
+    body_force: BodyForceSpec | None = None
+
+    def effort_at(self, step: int, steps: int) -> float:
+        """Effort at 0-based ``step`` of ``steps``: linear ramp ``effort`` to ``effort_end``, last step exactly ``effort_end``."""
+        if self.effort_end is None or step + 1 >= steps:
+            return float(self.effort if self.effort_end is None else self.effort_end)
+        return self.effort + (self.effort_end - self.effort) * (step + 1) / steps
 
     @property
     def is_reset(self) -> bool:
@@ -302,6 +345,10 @@ class PhaseSpec:
             out["actuator"] = self.actuator
         if self.effort is not None:
             out["effort"] = self.effort
+        if self.effort_end is not None:
+            out["effort_end"] = self.effort_end
+        if self.body_force is not None:
+            out["body_force"] = self.body_force.to_dict()
         return out
 
 
@@ -841,7 +888,8 @@ def _load_phase(item, index: int) -> PhaseSpec:
         raise ScenarioError(f"{where} must be an object")
     kind_required = ("name", "kind")
     _check_keys(item, where, required=kind_required,
-                optional=("duration_s", "initial", "actuator", "effort"))
+                optional=("duration_s", "initial", "actuator", "effort", "effort_end",
+                          "body_force"))
     name = _safe_id(_string(item, "name", where), f"{where}.name")
     kind = _string(item, "kind", where, choices=PHASE_KINDS)
     initial: dict[str, float] = {}
@@ -862,24 +910,48 @@ def _load_phase(item, index: int) -> PhaseSpec:
                 raise ScenarioError(f"{where}.initial[{key!r}] must be finite")
             initial[joint] = value
     if kind == "reset":
-        if "duration_s" in item or "actuator" in item or "effort" in item:
-            raise ScenarioError(f"{where}: a reset phase has no duration, actuator or effort")
+        if ("duration_s" in item or "actuator" in item or "effort" in item
+                or "effort_end" in item or "body_force" in item):
+            raise ScenarioError(
+                f"{where}: a reset phase has no duration, actuator, effort or body_force")
         return PhaseSpec(name=name, kind=kind, initial=tuple(sorted(initial.items())))
     if "initial" in item:
         raise ScenarioError(f"{where}: only a reset phase may declare initial coordinates")
     if "duration_s" not in item:
         raise ScenarioError(f"{where}: timed phase {kind!r} needs duration_s")
     duration = _number(item, "duration_s", where, positive=True)
-    actuator = effort = None
+    actuator = effort = effort_end = None
     if kind == "actuate":
         if "actuator" not in item or "effort" not in item:
             raise ScenarioError(f"{where}: an actuate phase needs actuator and effort")
         actuator = _safe_id(_string(item, "actuator", where), f"{where}.actuator")
         effort = _number(item, "effort", where)
+        if "effort_end" in item:
+            effort_end = _number(item, "effort_end", where)
     elif "actuator" in item or "effort" in item:
         raise ScenarioError(f"{where}: {kind!r} phases must not declare actuator or effort")
+    elif "effort_end" in item:
+        raise ScenarioError(f"{where}: {kind!r} phases must not declare effort_end")
+    body_force = None
+    if "body_force" in item:
+        if kind not in BODY_FORCE_PHASE_KINDS:
+            raise ScenarioError(
+                f"{where}: {kind!r} phases must not declare body_force "
+                f"(allowed on {list(BODY_FORCE_PHASE_KINDS)})")
+        body_force = _load_body_force(item["body_force"], f"{where}.body_force")
     return PhaseSpec(name=name, kind=kind, duration_s=duration, initial=(),
-                     actuator=actuator, effort=effort)
+                     actuator=actuator, effort=effort, effort_end=effort_end,
+                     body_force=body_force)
+
+
+def _load_body_force(item, where: str) -> BodyForceSpec:
+    if not isinstance(item, dict):
+        raise ScenarioError(f"{where} must be an object")
+    _check_keys(item, where, required=("body", "force_n"), optional=("force_end_n",))
+    body = _safe_id(_string(item, "body", where), f"{where}.body")
+    force = _numbers(item, "force_n", where, 3)
+    force_end = _numbers(item, "force_end_n", where, 3) if "force_end_n" in item else None
+    return BodyForceSpec(body=body, force_n=force, force_end_n=force_end)
 
 
 def load_acceptance(path: str | Path) -> AcceptanceSpec:

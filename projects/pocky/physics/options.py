@@ -3,9 +3,12 @@
 Supported options are the equivalent spring rate (200 / 500 / 1000 N/m), the timestep
 (1 ms / 0.5 ms at the original 2 ms compliance; 62.5 us / 31.25 us at the validated 0.25 ms
 compliance) and the contact / stop time constants, each restricted to {2 ms, 0.25 ms}. Both
-time constants must be at least twice the timestep. Everything else is rejected rather than
-silently ignored: loaded packets, the 25-capacity tube, packet mass, friction and initial
-fractions are not run choices here. The validated numerics come from
+time constants must be at least twice the timestep. ``packets`` is an integer from 0 to the
+10-packet tube capacity: packet 1 sits flat on the floor and packets 2..N on the tilted seat
+(``assembly.tilted_packet_frames``). ``packet_mass_kg`` (4-10 g, each packet) is only accepted with
+``packets >= 1``. ``separator`` ("wedge" default, or "blade") picks the syringe model's exit and
+is rejected for the prototype. Everything else is rejected rather than silently ignored: the 25-capacity tube,
+friction and initial fractions are not run choices here. The validated numerics come from
 ``out/mujoco-sim-valid/sweep/results.md``; the 2 ms defaults keep the M5a-1 evidence
 reproducible.
 
@@ -25,17 +28,23 @@ TIMECONSTS_S = (2.0e-3, 2.5e-4)
 DEFAULT_SPRING_N_M = 500.0
 DEFAULT_TIMESTEP_S = 1.0e-3
 DEFAULT_TIMECONST_S = 2.0e-3
+#: Tube capacity of the default (10-packet) test magazine.
+PACKET_CAPACITY = 10
+PACKET_COUNTS = tuple(range(PACKET_CAPACITY + 1))
+PACKET_MASS_RANGE_KG = (0.004, 0.010)
+DEFAULT_PACKET_MASS_KG = 0.007
 #: MuJoCo needs solref timeconst >= 2*dt for the soft constraint to be resolved.
 MIN_TIMECONST_PER_TIMESTEP = 2.0
+#: Syringe exit variants (``geometry.syringe.SEPARATORS``); the first is the default.
+SEPARATORS = ("wedge", "blade")
+DEFAULT_SEPARATOR = "wedge"
 
 SUPPORTED_KEYS = frozenset({
     "spring_stiffness_n_m", "timestep_s", "contact_timeconst_s", "stop_timeconst_s",
-    "button_actuator",
+    "button_actuator", "packets", "packet_mass_kg", "chassis_clamped", "separator",
 })
 REJECTED_KEYS = {
-    "packets": "loaded packets need a later bounded planning approval",
     "capacity": "the 25-capacity tube needs a later bounded planning approval",
-    "packet_mass_kg": "packet mass is only meaningful with loaded packets",
     "friction": "friction is a declared physical input, not a run option",
     "button_fraction": "the runtime scene is always built at fraction 0",
 }
@@ -49,6 +58,13 @@ class AssemblyOptions:
     stop_timeconst_s: float = DEFAULT_TIMECONST_S
     #: Opt-in bounded force actuator on the rod slide (the button); off keeps the scene identical.
     button_actuator: bool = False
+    #: Free packets, 0..PACKET_CAPACITY (1 = bottom packet only); 0 keeps the scene identical to the packetless baseline.
+    packets: int = 0
+    packet_mass_kg: float = DEFAULT_PACKET_MASS_KG
+    #: Opt-in user-declared boundary condition: chassis fixed to the world (clamped to the table).
+    chassis_clamped: bool = False
+    #: Syringe exit variant; only the syringe model accepts a non-default value.
+    separator: str = DEFAULT_SEPARATOR
 
     def _compliance_is_default(self) -> bool:
         return (self.contact_timeconst_s == DEFAULT_TIMECONST_S
@@ -66,6 +82,14 @@ class AssemblyOptions:
             out["stop_timeconst_s"] = self.stop_timeconst_s
         if self.button_actuator:
             out["button_actuator"] = True
+        if self.packets:
+            out["packets"] = self.packets
+            if self.packet_mass_kg != DEFAULT_PACKET_MASS_KG:
+                out["packet_mass_kg"] = self.packet_mass_kg
+        if self.chassis_clamped:
+            out["chassis_clamped"] = True
+        if self.separator != DEFAULT_SEPARATOR:
+            out["separator"] = self.separator
         return out
 
     def canonical_toml(self) -> str:
@@ -80,6 +104,14 @@ class AssemblyOptions:
             )
         if self.button_actuator:
             text += "button_actuator = true\n"
+        if self.packets:
+            text += f"packets = {self.packets}\n"
+            if self.packet_mass_kg != DEFAULT_PACKET_MASS_KG:
+                text += f"packet_mass_kg = {self.packet_mass_kg!r}\n"
+        if self.chassis_clamped:
+            text += "chassis_clamped = true\n"
+        if self.separator != DEFAULT_SEPARATOR:
+            text += f'separator = "{self.separator}"\n'
         return text
 
 
@@ -145,5 +177,37 @@ def load_options(table: Mapping[str, Any] | None) -> AssemblyOptions:
             raise ValueError(
                 f"assembly option 'button_actuator' must be true or false, got {button_actuator!r}"
             )
+    chassis_clamped = False
+    if "chassis_clamped" in table:
+        chassis_clamped = table["chassis_clamped"]
+        if not isinstance(chassis_clamped, bool):
+            raise ValueError(
+                f"assembly option 'chassis_clamped' must be true or false, got {chassis_clamped!r}"
+            )
+    packets = 0
+    if "packets" in table:
+        raw = table["packets"]
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= PACKET_CAPACITY:
+            raise ValueError(
+                f"assembly option 'packets' must be an integer in 0..{PACKET_CAPACITY}, got {raw!r}"
+            )
+        packets = raw
+    packet_mass = DEFAULT_PACKET_MASS_KG
+    if "packet_mass_kg" in table:
+        if packets < 1:
+            raise ValueError("assembly option 'packet_mass_kg' is only meaningful with packets >= 1")
+        packet_mass = _number("packet_mass_kg", table["packet_mass_kg"])
+        lo, hi = PACKET_MASS_RANGE_KG
+        if not lo <= packet_mass <= hi:
+            raise ValueError(f"packet_mass_kg {packet_mass!r} is outside [{lo}, {hi}] kg")
+    separator = DEFAULT_SEPARATOR
+    if "separator" in table:
+        separator = table["separator"]
+        if not isinstance(separator, str) or separator not in SEPARATORS:
+            raise ValueError(
+                f"assembly option 'separator' must be one of {list(SEPARATORS)}, got {separator!r}"
+            )
     return AssemblyOptions(spring_stiffness_n_m=spring, timestep_s=timestep,
-                           button_actuator=button_actuator, **timeconsts)
+                           button_actuator=button_actuator, packets=packets,
+                           packet_mass_kg=packet_mass, chassis_clamped=chassis_clamped,
+                           separator=separator, **timeconsts)
