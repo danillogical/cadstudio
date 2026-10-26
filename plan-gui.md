@@ -1,12 +1,12 @@
 # plan-gui.md: cadstudio GUI (browser + VS Code webview)
 
-**Status:** G0 implemented and merged locally; automated merge gate passed; waiting for user gate H0.
+**Status:** G0 merged and verified; H0 browser-first fallback selected by the user on 2026-10-26; proceeding to G1.
 **Date:** 2026-10-25.
 **Started from:** `~/Downloads/plan-draft-gui.md`, adapted to the repo as it stands at `81649e6`.
 **Runs on:** webstudio.local, through packetd (Codex skill `packetd`, MCP server `http://127.0.0.1:7766/mcp`).
 **Used on:** the laptop (VS Code, Claude Code and Codex in its terminal).
 
-**G0 execution (2026-10-25):** packet `pk-czcd072f` and dependency repair `pk-x4hh8jyw` both ACCEPTED in round 1, squash-merged as `45be859` and `d66aef0`. The final merge gate passed: 1,474 Python/physics tests passed (12 skipped), 25 extension tests passed, the committed build stayed byte-identical, `uv.lock` stayed unchanged, the private-mirror scan passed, and npm audit reported zero vulnerabilities. H0 findings remain pending in `editor/vscode/README.md`; G1 follows H0.
+**G0 execution (2026-10-25):** packet `pk-czcd072f` and dependency repair `pk-x4hh8jyw` both ACCEPTED in round 1, squash-merged as `45be859` and `d66aef0`. The final merge gate passed: 1,474 Python/physics tests passed (12 skipped), 25 extension tests passed, the committed build stayed byte-identical, `uv.lock` stayed unchanged, the private-mirror scan passed, and npm audit reported zero vulnerabilities. H0's browser-first fallback is selected; live VS Code checks remain pending in `editor/vscode/README.md`.
 
 ## 0. Decision summary
 
@@ -203,6 +203,8 @@ The orchestrator records the answers in `editor/vscode/README.md` (trivial doc c
 
 - **PASS:** the panel opens in the same window with no global install.
 - **Fallback:** if workspace install is unreliable, keep going browser-first. VS Code then gets a private VSIX (`code --install-extension`) as an explicit opt-in, documented as such.
+
+**Disposition (2026-10-26):** the user accepted the recommendation to take the browser-first fallback and continue to G1. The live workspace-install, webview and rebuild checks remain unverified and are deferred to the editor work in G4/G5. Keep the G0 extension; private VSIX installation remains an explicit opt-in. VS Code documents URI dispatch to the topmost window, so retain G5's repo-root check, acknowledgment and browser fallback. This selects the fallback without recording H0 as PASS.
 
 ### Milestone 1: CLI boundary
 
