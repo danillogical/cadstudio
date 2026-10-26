@@ -1,14 +1,18 @@
-"""``cad`` command line: list / build / render / check ``<project>/<model>``."""
+"""``cad`` command line: list / build / render / check / doctor ``<project>/<model>``."""
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
+import math
+import os
 import sys
 from pathlib import Path
 
 from .checks import format_report, has_failures, run_checks, write_report
 from .export import export_assembly, export_part
 from .params import REPO_ROOT, override
-from .project import Project, all_models, load_model, resolve
+from .project import Project, all_models, discover, list_models, load_model, resolve
 
 
 # Local copy so the argparse hook can use it without importing the physics package.
@@ -62,14 +66,52 @@ def _outdir(args, project: Project, model: str) -> Path:
     return Path(args.out) if args.out else REPO_ROOT / "out" / project.name / model
 
 
-def _do_checks(parts, p, project: Project, outdir) -> int:
+@contextlib.contextmanager
+def _stdout_to_stderr():
+    """JSON mode: send all progress (Python and native, e.g. OCCT) to stderr so stdout is one document."""
+    sys.stdout.flush()
+    saved = os.dup(1)
+    os.dup2(2, 1)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
+
+
+def _finite(value: float | None) -> float | None:
+    """Coerce to a JSON-safe float; NaN and infinities are not valid JSON, so report null."""
+    if value is None:
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _emit_json(doc) -> None:
+    """Print the one JSON document on stdout; call only with the stdout guard released."""
+    print(json.dumps(doc, indent=2, allow_nan=False))
+
+
+def _run_and_report(parts, p, project: Project, outdir) -> tuple[dict, dict[str, Path]]:
     results = {n: run_checks(n, mp, p, project) for n, mp in parts.items()}
-    write_report(results, outdir)
+    report = write_report(results, outdir)
     print(format_report(results))
+    return results, report
+
+
+def _checks_json(results: dict) -> dict:
+    return {n: [{"name": r.name, "status": r.status, "detail": r.detail, "value": _finite(r.value)}
+                for r in rs] for n, rs in results.items()}
+
+
+def _do_checks(parts, p, project: Project, outdir) -> int:
+    results, _ = _run_and_report(parts, p, project, outdir)
     return 1 if has_failures(results) else 0
 
 
-def _do_render(parts, p, project: Project, outdir, views: str = "all") -> None:
+def _do_render(parts, p, project: Project, outdir, views: str = "all") -> list[Path]:
     from .render import render_model, render_part
     written = render_model(parts, p, outdir, project, views)
     if views in ("standard", "all"):
@@ -77,26 +119,70 @@ def _do_render(parts, p, project: Project, outdir, views: str = "all") -> None:
             written[f"{n}_print.png"] = render_part(n, mp, outdir)
     for path in written.values():
         print(f"wrote {path}")
+    return list(written.values())
 
 
 def cmd_list(args) -> int:
-    for name in all_models():
-        print(name)
+    if not args.json:
+        for name in all_models():
+            print(name)
+        return 0
+    with _stdout_to_stderr():
+        projects = [{"name": proj.name, "params_path": str(proj.params_path),
+                     "models": list_models(proj)} for proj in discover().values()]
+        models = all_models()
+    _emit_json({"projects": projects, "models": models})
     return 0
 
 
-def cmd_build(args) -> int:
+def _build(args) -> dict:
+    """Resolve, export, and optionally render/check one model, printing progress as it goes."""
     project, model = _resolve(args)
     p = _load(args, project)
     parts = _build_parts(args, project, model, p)
     outdir = _outdir(args, project, model)
+    written: list[Path] = []
     for n, mp in parts.items():
         for path in export_part(n, mp, outdir).values():
+            written.append(path)
             print(f"wrote {path}")
-    print(f"wrote {export_assembly(parts, outdir)}")
+    assembly = export_assembly(parts, outdir)
+    written.append(assembly)
+    print(f"wrote {assembly}")
     if args.render:
-        _do_render(parts, p, project, outdir, args.views)
-    return _do_checks(parts, p, project, outdir) if args.check else 0
+        written.extend(_do_render(parts, p, project, outdir, args.views))
+    results, report = _run_and_report(parts, p, project, outdir) if args.check else (None, None)
+    return {"project": project, "model": model, "outdir": outdir, "written": written,
+            "results": results, "report": report}
+
+
+def cmd_build(args) -> int:
+    try:
+        if args.json:
+            with _stdout_to_stderr():
+                state = _build(args)
+        else:
+            state = _build(args)
+    except SystemExit as exc:
+        if not args.json or not isinstance(exc.code, str):
+            raise
+        print(exc.code, file=sys.stderr)
+        _emit_json({"model": args.model, "error": exc.code, "exit_code": 1})
+        return 1
+
+    results = state["results"]
+    code = 1 if results is not None and has_failures(results) else 0
+    if not args.json:
+        return code
+    _emit_json({
+        "model": f"{state['project'].name}/{state['model']}",
+        "outdir": str(state["outdir"]),
+        "written": [str(path) for path in state["written"]],
+        "checks": _checks_json(results) if results is not None else None,
+        "report": {k: str(v) for k, v in state["report"].items()} if state["report"] else None,
+        "exit_code": code,
+    })
+    return code
 
 
 def cmd_render(args) -> int:
@@ -110,6 +196,20 @@ def cmd_check(args) -> int:
     project, model = _resolve(args)
     p = _load(args, project)
     return _do_checks(_build_parts(args, project, model, p), p, project, _outdir(args, project, model))
+
+
+def cmd_doctor(args) -> int:
+    """``cad doctor``: report the local toolchain; imports lazily to keep the CLI light."""
+    from .doctor import collect, format_text
+
+    if args.json:
+        with _stdout_to_stderr():
+            report = collect()
+        _emit_json(report)
+    else:
+        report = collect()
+        print(format_text(report))
+    return 0 if report["ok"] else 1
 
 
 def cmd_physics(args) -> int:
@@ -580,7 +680,9 @@ def json_status(status: str, scenario: str, detail: str = "") -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cad", description="build123d CAD workflow tools")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("list", help="list models as <project>/<model>").set_defaults(fn=cmd_list)
+    listp = sub.add_parser("list", help="list models as <project>/<model>")
+    listp.add_argument("--json", action="store_true", help="print one JSON document on stdout")
+    listp.set_defaults(fn=cmd_list)
     for name, fn, helptext in (("build", cmd_build, "build, export (and optionally render/check)"),
                                ("render", cmd_render, "render PNGs"),
                                ("check", cmd_check, "run checks")):
@@ -597,7 +699,12 @@ def main(argv: list[str] | None = None) -> int:
         if name == "build":
             sp.add_argument("--render", action="store_true")
             sp.add_argument("--check", action="store_true")
+            sp.add_argument("--json", action="store_true", help="print one JSON document on stdout")
         sp.set_defaults(fn=fn)
+
+    doctor = sub.add_parser("doctor", help="check the local toolchain")
+    doctor.add_argument("--json", action="store_true", help="print one JSON document on stdout")
+    doctor.set_defaults(fn=cmd_doctor)
 
     phys = sub.add_parser("physics", help="optional rigid-body physics (needs --extra physics)")
     phys_sub = phys.add_subparsers(dest="verb", required=True)

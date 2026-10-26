@@ -14,11 +14,14 @@ Projects:
 ## Commands
 
 - `uv sync` installs the environment.
-- `uv run cad list` lists models as `<project>/<model>` (every `projects/<project>/models/*.py` not starting with `_`), e.g. `armor/armor_industrial`.
-- `uv run cad build <model> [--part NAME] [--render] [--check] [--views standard|detail|sections|all] [--set KEY=VAL ...] [--params PATH] [--out DIR]` exports STEP, STL and 3MF, then optionally renders and checks.
+- `uv run cad list [--json]` lists models as `<project>/<model>` (every `projects/<project>/models/*.py` not starting with `_`), e.g. `armor/armor_industrial`.
+- `uv run cad build <model> [--part NAME] [--render] [--check] [--views standard|detail|sections|all] [--set KEY=VAL ...] [--params PATH] [--out DIR] [--json]` exports STEP, STL and 3MF, then optionally renders and checks.
 - `uv run cad render <model> [--views ...]` renders only.
 - `uv run cad check <model> [--set ...]` runs checks only. Exit code is 1 if any check FAILs.
+- `uv run cad doctor [--json]` reports Python, uv, build123d, MuJoCo, node/npm, the output dir and the UI/extension builds.
 - `uv run pytest tests -q` runs the test suite (about 3.5 minutes).
+
+`--json` prints one JSON document on stdout and sends progress to stderr; the exit codes do not change.
 
 `<model>` is `<project>/<model>`, or a bare model name when it is unique across projects (`fit_test` works, a name shared by two projects is an error). The default output dir is `out/<project>/<model>/` and the default params file is the project's `params.toml`.
 
