@@ -285,6 +285,11 @@ def cmd_gui(args) -> int:
         return _gui_scene(args)
     if args.verb == "trajectory":
         return _gui_trajectory(args)
+    if args.verb == "serve":
+        # Function-local import: cadkit core must not import http.server at module load.
+        from .gui.server import run
+
+        return run(port=args.port, open_browser=not args.no_browser, as_json=args.json)
     raise SystemExit(f"unknown gui verb {args.verb!r}")
 
 
@@ -803,6 +808,12 @@ def main(argv: list[str] | None = None) -> int:
                             help="also write contacts.bin (points and normal forces)")
     trajectory.add_argument("--json", action="store_true", help="print one JSON document on stdout")
     trajectory.set_defaults(fn=cmd_gui)
+
+    serve = gui_sub.add_parser("serve", help="run the local GUI service (127.0.0.1)")
+    serve.add_argument("--port", type=int, default=0, help="TCP port on 127.0.0.1 (default 0: pick one)")
+    serve.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    serve.add_argument("--json", action="store_true", help="print one JSON document on stdout")
+    serve.set_defaults(fn=cmd_gui)
 
     phys = sub.add_parser("physics", help="optional rigid-body physics (needs --extra physics)")
     phys_sub = phys.add_subparsers(dest="verb", required=True)

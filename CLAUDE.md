@@ -20,6 +20,7 @@ Projects:
 - `uv run cad check <model> [--set ...]` runs checks only. Exit code is 1 if any check FAILs.
 - `uv run cad gui scene <model> [--set ...] [--params P] [--out DIR] [--json]` writes `out/<project>/<model>/scene/` (`scene.json` and `parts/<id>.glb` in assembly coordinates, in mm).
 - `uv run --frozen --extra physics cad gui trajectory RUN_DIR [--fps N] [--contacts] [--json]` writes `<run-name>.gui/` next to the run (`trajectory.json`, `poses.bin`, `meshes/*.glb`, optional `contacts.bin`, in mm). It never writes into the run dir.
+- `uv run --frozen --extra physics cad gui serve [--port 0] [--no-browser] [--json]` starts the loopback GUI service and writes `out/.gui/service.json`.
 - `uv run cad doctor [--json]` reports Python, uv, build123d, MuJoCo, node/npm, the output dir and the UI/extension builds.
 - `uv run pytest tests -q` runs the test suite (about 3.5 minutes).
 
