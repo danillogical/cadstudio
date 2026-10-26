@@ -122,6 +122,7 @@ Results (`out/mujoco-two-cycle/verdict.md`): wedge clamped PASSes all 22 checks.
 - `docs/m1_sweep.py`: Gate A pose sweep. Writes `out/pocky/linkage_motion/gate_a.json`.
 - `docs/prototype_sweep.py`: the same sweep on the printed prototype. Writes `out/pocky/prototype/gate_a.json`.
 - `docs/prototype_animation.py`: one ejection cycle in the OCP CAD Viewer. Writes `out/pocky/prototype/animation/simulation.json`.
+- `docs/print_plate.py`: lays every `pocky/syringe` part on one Prusa XL plate and writes the PrusaSlicer project `out/pocky/syringe/syringe_plate.3mf` (XL 2T, 0.20mm STRUCTURAL, Generic PETG). Needs `prusa-slicer` on PATH.
 - `docs/assembly.md`: how the printed parts go together, with renders of the STL meshes.
 - `plan-first-prototype.md` (repo root): first printed prototype, and the criteria for accepting it.
 - `report-current-progress.md` (repo root): what is done and what is not.

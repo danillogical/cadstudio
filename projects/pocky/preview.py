@@ -161,13 +161,21 @@ class Run:
         corners = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
         lo = np.full(3, np.inf)
         hi = np.full(3, -np.inf)
+        reach = None
         for row in rows:
             self.restore(int(row))
             for g in geoms:
                 # World-space corners of the geom's local AABB (centre + half-size).
                 local = m.geom_aabb[g, :3] + corners * m.geom_aabb[g, 3:]
                 world = d.geom_xpos[g] + local @ d.geom_xmat[g].reshape(3, 3).T
+                # Skip geoms that leave the assembly (a pulled-away packet), so they cannot zoom the camera out.
+                if reach is not None and ((world < reach[0]).any() or (world > reach[1]).any()):
+                    continue
                 lo, hi = np.minimum(lo, world.min(axis=0)), np.maximum(hi, world.max(axis=0))
+            if reach is None:
+                # The first row's bounds, grown by their own size on every side, bound later rows.
+                size = np.maximum(hi - lo, 1e-3)
+                reach = (lo - size, hi + size)
         return lo, hi
 
     def fit_distance(self, lo, hi, azimuth: float, elevation: float, aspect: float) -> float:
