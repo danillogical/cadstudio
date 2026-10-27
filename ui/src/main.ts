@@ -2,8 +2,10 @@ import "./style.css";
 import { AppController } from "./app/controller";
 import { renderBanner } from "./app/banner";
 import { JobPanel } from "./app/jobs-panel";
+import { targetFromSearch } from "./app/navigate";
 import { PlaybackController } from "./playback/controller";
 import { BrowserTransport } from "./transport/browser";
+import type { NavigateTarget } from "./transport/messages";
 import { TransportError, type CadStudioTransport, type Job } from "./transport/types";
 import { hasVsCodeApi, VsCodeTransport } from "./transport/vscode";
 import { Viewport, type LayerName } from "./viewport/viewport";
@@ -31,10 +33,11 @@ async function main(): Promise<void> {
   const showModel = element<HTMLButtonElement>("show-model");
   const showRun = element<HTMLButtonElement>("show-run");
 
-  // Same UI in both hosts; only the transport differs.
-  const transport: CadStudioTransport = hasVsCodeApi()
-    ? VsCodeTransport.fromWebview()
-    : BrowserTransport.fromLocation();
+  // Same UI in both hosts; only the transport differs. A browser opened by `cad gui open`
+  // carries its target as `?model=` or `?run=`; the webview gets it as a `navigate` message.
+  const vscodeTransport = hasVsCodeApi() ? VsCodeTransport.fromWebview() : null;
+  const urlTarget = vscodeTransport ? null : targetFromSearch(globalThis.location.search);
+  const transport: CadStudioTransport = vscodeTransport ?? BrowserTransport.fromLocation();
   const viewport = new Viewport(element("viewport"));
   const controller = new AppController({
     transport,
@@ -146,12 +149,14 @@ async function main(): Promise<void> {
   runPicker.appendChild(runPlaceholder);
   runPicker.disabled = true;
 
-  picker.addEventListener("change", () => {
-    const model = picker.value;
-    if (!model) return;
+  const selectModel = (model: string) => {
+    picker.value = model;
     showLayer("scene");
     void controller.loadModel(model);
     void jobs.setModel(model);
+  };
+  picker.addEventListener("change", () => {
+    if (picker.value) selectModel(picker.value);
   });
   runPicker.addEventListener("change", () => {
     if (runPicker.value) void openRun(runPicker.value);
@@ -180,6 +185,28 @@ async function main(): Promise<void> {
     viewport.dispose();
   });
 
+  let modelsLoaded = false;
+  let markInitialised: () => void = () => {};
+  const initialised = new Promise<void>((resolve) => {
+    markInitialised = resolve;
+  });
+  // Show a `cad gui open` target as if it had been picked, once the model list is in.
+  const navigate = async (target: NavigateTarget) => {
+    await initialised;
+    if (!modelsLoaded) return; // The service error is already on the banner.
+    if ("model" in target) {
+      if ([...picker.options].some((option) => option.value === target.model)) selectModel(target.model);
+      else renderBanner(banner, { kind: "error", text: `Unknown model ${target.model}.` });
+      return;
+    }
+    await refreshRuns(target.run);
+    await openRun(target.run);
+  };
+  if (vscodeTransport) {
+    vscodeTransport.onNavigate((target) => void navigate(target));
+    vscodeTransport.ready();
+  }
+
   try {
     const health = await transport.health();
     if (health.protocolVersion !== 1) {
@@ -197,8 +224,9 @@ async function main(): Promise<void> {
       picker.appendChild(option);
     }
     picker.disabled = models.models.length === 0;
+    modelsLoaded = true;
     void refreshRuns();
-    if (models.models.length === 1) {
+    if (models.models.length === 1 && !urlTarget) {
       picker.value = models.models[0];
       void jobs.setModel(models.models[0]);
       await controller.loadModel(models.models[0]);
@@ -206,6 +234,8 @@ async function main(): Promise<void> {
   } catch (error) {
     renderBanner(banner, { kind: "error", text: `Could not reach the GUI service: ${describe(error)}` });
   }
+  markInitialised();
+  if (urlTarget) await navigate(urlTarget);
 }
 
 void main();

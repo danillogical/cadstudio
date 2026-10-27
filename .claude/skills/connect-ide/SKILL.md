@@ -8,6 +8,12 @@ description: Open cadstudio artifacts (verdicts, reports, renders, physics video
 Opens files in the user's VS Code window from Claude's shell, with `code -r` (reuse the
 current window) and `code -g FILE:LINE` (go to a line).
 
+To show a **model or a physics run**, prefer the GUI:
+`uv run --frozen --extra physics cad gui open <project>/<model>` or
+`... cad gui open --run RUN_DIR` (the `cadstudio` skill covers it, its JSON and exit codes).
+It opens the CADStudio panel in this window, or falls back to a browser and says why.
+Use the `code` commands below for files: reports, verdicts, renders, videos and source lines.
+
 ## Requirements
 
 - `code` must be on the ACC tool allowlist (`~/.claude/apple/tool_allowlist.csv`). Inside the
@@ -52,7 +58,8 @@ A run directory is anything containing `summary.json` and `states.npz`. Find rec
 
 ## Showing a physics run
 
-Default to the interactive viewer, not video; the user prefers it. Launch it yourself as a
+Prefer `cad gui open --run RUN_DIR` (above). When the user asks for the native MuJoCo viewer,
+or the GUI cannot open, use the interactive viewer rather than a video. Launch it yourself as a
 background command (it re-execs under mjpython and opens a native window on the user's
 screen; it runs until they close the window):
 
@@ -74,12 +81,8 @@ code -r RUN_DIR/../preview.mp4
 - `--transparent body,lip` is for the prototype; use `--transparent housing` for the syringe.
 - Add `--elevation -70 --azimuth 90` for a top view.
 
-## Later: the cadstudio extension
+## The cadstudio extension
 
-When the cadstudio VS Code extension exists, prefer its URI routes so the GUI panels open:
-
-```
-code --open-url "vscode://danillogical.cadstudio/viewer?run=out/mujoco-syringe/run_clamped"
-```
-
-Until that extension is installed these URLs do nothing, so use the file commands above.
+Don't call `code --open-url "vscode://danillogical.cadstudio/..."` by hand. `cad gui open`
+builds that URI with a one-time request id and waits for the extension's acknowledgement,
+which is the only reliable sign that the panel opened.

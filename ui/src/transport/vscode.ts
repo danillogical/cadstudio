@@ -1,5 +1,5 @@
 import { isRecord, jobOf, mapEvent } from "./events";
-import type { HostToWebview, TransportMethod, WebviewToHost } from "./messages";
+import { parseNavigate, type HostToWebview, type NavigateTarget, type TransportMethod, type WebviewToHost } from "./messages";
 import {
   type CadStudioTransport,
   type HealthInfo,
@@ -63,6 +63,7 @@ export class VsCodeTransport implements CadStudioTransport {
   private readonly timeoutMs: number;
   private readonly pending = new Map<number, Pending>();
   private readonly listeners = new Set<(event: ServiceEvent) => void>();
+  private readonly navigateListeners = new Set<(target: NavigateTarget) => void>();
   private readonly stopListening: () => void;
   private nextId = 1;
 
@@ -141,6 +142,11 @@ export class VsCodeTransport implements CadStudioTransport {
     }
     if (message.kind === "connection" && (message.state === "open" || message.state === "error")) {
       this.emit({ type: "connection", state: message.state });
+      return;
+    }
+    if (message.kind === "navigate") {
+      const target = parseNavigate(data);
+      if (target) for (const listener of [...this.navigateListeners]) listener(target);
     }
   }
 
@@ -214,9 +220,21 @@ export class VsCodeTransport implements CadStudioTransport {
     };
   }
 
+  /** Listen for the host's `navigate` messages (`cad gui open`); returns the remover. */
+  onNavigate(listener: (target: NavigateTarget) => void): () => void {
+    this.navigateListeners.add(listener);
+    return () => this.navigateListeners.delete(listener);
+  }
+
+  /** Tell the host the page handles `navigate`; call once, after `onNavigate`. */
+  ready(): void {
+    this.post({ kind: "ready" });
+  }
+
   /** Reject outstanding calls and stop listening, e.g. when the page goes away. */
   dispose(): void {
     this.stopListening();
+    this.navigateListeners.clear();
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
       entry.reject(new TransportError(0, `${entry.method} cancelled: the transport was disposed`));

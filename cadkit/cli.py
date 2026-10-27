@@ -290,6 +290,11 @@ def cmd_gui(args) -> int:
         from .gui.server import run
 
         return run(port=args.port, open_browser=not args.no_browser, as_json=args.json)
+    if args.verb == "open":
+        from .gui import opener
+
+        return opener.run(model=args.model, run_dir=args.run_dir, editor=args.editor,
+                          no_open=args.no_open, as_json=args.json)
     raise SystemExit(f"unknown gui verb {args.verb!r}")
 
 
@@ -814,6 +819,19 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--no-browser", action="store_true", help="do not open a browser")
     serve.add_argument("--json", action="store_true", help="print one JSON document on stdout")
     serve.set_defaults(fn=cmd_gui)
+
+    gui_open = gui_sub.add_parser(
+        "open", help="open the GUI on a model or run in VS Code (acknowledged) or a browser")
+    gui_open.add_argument("model", nargs="?",
+                          help="<project>/<model>, or a bare <model> unique across projects")
+    gui_open.add_argument("--run", dest="run_dir", metavar="RUN_DIR",
+                          help="a `cad physics run` output directory under out/")
+    gui_open.add_argument("--editor", choices=("auto", "vscode", "browser"), default="auto",
+                          help="auto (default): VS Code from its terminal, else the browser")
+    gui_open.add_argument("--no-open", action="store_true",
+                          help="open nothing; print the tokened URL")
+    gui_open.add_argument("--json", action="store_true", help="print one JSON document on stdout")
+    gui_open.set_defaults(fn=cmd_gui)
 
     phys = sub.add_parser("physics", help="optional rigid-body physics (needs --extra physics)")
     phys_sub = phys.add_subparsers(dest="verb", required=True)

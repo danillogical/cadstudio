@@ -31,6 +31,11 @@ export interface ServiceClient {
    * already registered, so a service the user stopped is not restarted behind their back.
    */
   openEvents(handlers: EventStreamHandlers, options: { startService: boolean }): Promise<EventStream>;
+  /**
+   * Forward one route to the service already registered for the folder, never starting one;
+   * null when none is registered. Used for `cad gui open` requests, which must not start a service.
+   */
+  requestRegistered?(route: HttpRoute, signal?: AbortSignal): Promise<Reply | null>;
 }
 
 export interface HttpIo {
@@ -55,13 +60,28 @@ export class HttpServiceClient implements ServiceClient {
   ) {}
 
   async request(route: HttpRoute, signal: AbortSignal): Promise<Reply> {
+    const reply = await this.forward(route, signal, () => this.locator.get());
+    return reply ?? { ok: false, error: { status: 0, message: "no healthy GUI service is registered" } };
+  }
+
+  requestRegistered(route: HttpRoute, signal: AbortSignal = new AbortController().signal): Promise<Reply | null> {
+    return this.forward(route, signal, () => this.locator.find());
+  }
+
+  /** Locate the service, send the route, and retry once after a refused connection or a 401. */
+  private async forward(
+    route: HttpRoute,
+    signal: AbortSignal,
+    locate: () => Promise<ServiceRecord | null>,
+  ): Promise<Reply | null> {
     for (let attempt = 0; ; attempt += 1) {
-      let record: ServiceRecord;
+      let record: ServiceRecord | null;
       try {
-        record = await this.locator.get();
+        record = await locate();
       } catch (error) {
         return { ok: false, error: { status: 0, message: messageOf(error) } };
       }
+      if (!record) return null;
       if (signal.aborted) return { ok: false, error: networkError(new Error("request cancelled")) };
       let answer: HttpAnswer;
       try {
@@ -102,6 +122,8 @@ export interface BridgeWebview {
 }
 
 export interface BridgeOptions {
+  /** Called on each `{kind: "ready"}` from the page. */
+  onReady?: () => void;
   reconnectMs?: number;
   setTimer?: (callback: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
@@ -113,6 +135,7 @@ export class PanelBridge {
   private readonly reconnectMs: number;
   private readonly setTimer: (callback: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
+  private readonly onReady: (() => void) | undefined;
   private stream: EventStream | null = null;
   private timer: unknown = null;
   private subscribed = false;
@@ -126,6 +149,7 @@ export class PanelBridge {
     private readonly client: ServiceClient,
     options: BridgeOptions = {},
   ) {
+    this.onReady = options.onReady;
     this.reconnectMs = options.reconnectMs ?? RECONNECT_MS;
     this.setTimer = options.setTimer ?? ((callback, ms) => setTimeout(callback, ms));
     this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
@@ -152,6 +176,7 @@ export class PanelBridge {
     const { message } = parsed;
     if (message.kind === "subscribe") return this.subscribe();
     if (message.kind === "unsubscribe") return this.unsubscribe();
+    if (message.kind === "ready") return this.onReady?.();
 
     const controller = new AbortController();
     this.inflight.add(controller);

@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { HttpServiceClient, PanelBridge, type ServiceClient } from "./bridge";
 import { makeNonce, renderPanelHtml } from "./html";
 import { fetchHealth } from "./http";
+import { handleOpenRequest, type OpenRequestDeps } from "./open";
+import { navigateMessage, type NavigateMessage, type NavigateTarget } from "./protocol";
 import { ServiceLocator } from "./service";
 import { startServeTask } from "./tasks";
-import { parseOpenUri } from "./uri";
+import { parseOpenRequestId, parseOpenUri } from "./uri";
 
 export const COMMAND_ID = "cadstudio.openGui";
 export const VIEW_TYPE = "cadstudio.gui";
@@ -16,6 +18,7 @@ export const MEDIA_DIR = "media";
 export const UNTRUSTED_MESSAGE =
   "CADStudio is disabled in untrusted workspaces. Trust this workspace to open the GUI.";
 export const NO_FOLDER_MESSAGE = "CADStudio: open the cadstudio repository folder to use the GUI.";
+export const BAD_REQUEST_MESSAGE = "CADStudio: ignoring a `cad gui open` URI with a malformed request id.";
 
 /** The I/O the extension does, replaceable in tests. */
 export interface ExtensionDeps {
@@ -26,7 +29,7 @@ export interface ExtensionDeps {
 }
 
 /** The service resolves its repo root, so compare against the resolved workspace path. */
-function canonicalPath(path: string): string {
+export function canonicalPath(path: string): string {
   try {
     return realpathSync(path);
   } catch {
@@ -63,6 +66,10 @@ export class GuiPanels {
   private panel: vscode.WebviewPanel | undefined;
   private bridge: PanelBridge | undefined;
   private client: { key: string; client: ServiceClient } | undefined;
+  /** Whether the current panel's page has sent `ready` since it was (re)loaded. */
+  private ready = false;
+  /** The latest navigation waiting for `ready`; an older one is dropped (resolved false). */
+  private queued: { message: NavigateMessage; resolve: (posted: boolean) => void } | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -112,10 +119,46 @@ export class GuiPanels {
     this.attach(panel, index);
   }
 
+  /**
+   * Ask the open panel to show `target`, now if its page is ready, else once it says so.
+   * Resolves true once the message was posted; false without a panel, or if it closed first.
+   */
+  navigate(target: NavigateTarget | null): Promise<boolean> {
+    const panel = this.panel;
+    if (!panel) return Promise.resolve(false);
+    if (target === null) return Promise.resolve(true);
+    const message = navigateMessage(target);
+    if (this.ready) return post(panel, message);
+    this.dropQueued();
+    return new Promise((resolve) => {
+      this.queued = { message, resolve };
+    });
+  }
+
+  /** The client for this window's folder, or undefined without a folder. */
+  folderClient(): ServiceClient | undefined {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    return folder ? this.clientFor(folder) : undefined;
+  }
+
   dispose(): void {
+    this.dropQueued();
     this.bridge?.dispose();
     this.bridge = undefined;
     this.panel = undefined;
+  }
+
+  private dropQueued(): void {
+    this.queued?.resolve(false);
+    this.queued = undefined;
+  }
+
+  private markReady(panel: vscode.WebviewPanel): void {
+    if (panel !== this.panel) return;
+    this.ready = true;
+    const queued = this.queued;
+    this.queued = undefined;
+    if (queued) void post(panel, queued.message).then(queued.resolve);
   }
 
   private refused(): boolean {
@@ -163,18 +206,44 @@ export class GuiPanels {
       return;
     }
     // The bridge listens before the page loads, so no early message is lost.
-    const bridge = new PanelBridge(webview, this.clientFor(folder));
+    const bridge = new PanelBridge(webview, this.clientFor(folder), { onReady: () => this.markReady(panel) });
+    this.dropQueued();
     this.panel = panel;
     this.bridge = bridge;
+    this.ready = false;
     panel.onDidDispose(() => {
       bridge.dispose();
       if (this.panel === panel) {
+        this.dropQueued();
         this.panel = undefined;
         this.bridge = undefined;
+        this.ready = false;
       }
     });
     webview.html = html;
   }
+}
+
+function post(panel: vscode.WebviewPanel, message: NavigateMessage): Promise<boolean> {
+  return Promise.resolve(panel.webview.postMessage(message)).then(
+    (delivered) => delivered,
+    () => false,
+  );
+}
+
+/** The real `OpenRequestDeps` for this window. */
+export function openRequestDeps(panels: GuiPanels): OpenRequestDeps {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  const client = panels.folderClient();
+  return {
+    workspaceRoot: folder ? canonicalPath(folder.uri.fsPath) : null,
+    trusted: vscode.workspace.isTrusted,
+    request: async (route) => (client?.requestRegistered ? client.requestRegistered(route) : null),
+    openPanel: () => panels.open() !== undefined,
+    navigate: (target) => panels.navigate(target),
+    warn: (message) => void vscode.window.showWarningMessage(message),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
 }
 
 export function activate(context: vscode.ExtensionContext, deps: ExtensionDeps = defaultDeps): void {
@@ -197,15 +266,31 @@ export function activate(context: vscode.ExtensionContext, deps: ExtensionDeps =
 
   context.subscriptions.push(
     vscode.window.registerUriHandler({
-      handleUri(uri: vscode.Uri) {
+      handleUri(uri: vscode.Uri): Promise<void> | undefined {
         const open = parseOpenUri(uri);
         if (!open) {
           void vscode.window.showWarningMessage(
             `CADStudio: unsupported URI path "${uri.path}"`,
           );
-          return;
+          return undefined;
         }
-        void vscode.commands.executeCommand(COMMAND_ID, open.query);
+        const request = parseOpenRequestId(open.query);
+        if (request === null) {
+          void vscode.window.showWarningMessage(BAD_REQUEST_MESSAGE);
+          return undefined;
+        }
+        if (request === undefined) {
+          void vscode.commands.executeCommand(COMMAND_ID, open.query);
+          return undefined;
+        }
+        // Returned so tests can await the whole claim, open and ack sequence.
+        return handleOpenRequest(request, openRequestDeps(panels)).then(
+          () => undefined,
+          (error: unknown) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            void vscode.window.showWarningMessage(`CADStudio: the \`cad gui open\` request failed: ${reason}`);
+          },
+        );
       },
     }),
   );

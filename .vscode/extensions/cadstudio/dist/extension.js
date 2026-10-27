@@ -30,6 +30,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/extension.ts
 var extension_exports = {};
 __export(extension_exports, {
+  BAD_REQUEST_MESSAGE: () => BAD_REQUEST_MESSAGE,
   COMMAND_ID: () => COMMAND_ID,
   GuiPanels: () => GuiPanels,
   MEDIA_DIR: () => MEDIA_DIR,
@@ -37,8 +38,10 @@ __export(extension_exports, {
   UNTRUSTED_MESSAGE: () => UNTRUSTED_MESSAGE,
   VIEW_TYPE: () => VIEW_TYPE,
   activate: () => activate,
+  canonicalPath: () => canonicalPath,
   deactivate: () => deactivate,
   defaultDeps: () => defaultDeps,
+  openRequestDeps: () => openRequestDeps,
   panelOptions: () => panelOptions
 });
 module.exports = __toCommonJS(extension_exports);
@@ -333,7 +336,7 @@ function validateCall(method, args) {
 }
 function parseWebviewMessage(raw) {
   if (!isRecord(raw)) return { ok: false, id: null, error: "message must be an object" };
-  if (raw.kind === "subscribe" || raw.kind === "unsubscribe") {
+  if (raw.kind === "subscribe" || raw.kind === "unsubscribe" || raw.kind === "ready") {
     if (!hasOnlyKeys(raw, ["kind"])) return { ok: false, id: null, error: `${raw.kind} takes no fields` };
     return { ok: true, message: { kind: raw.kind } };
   }
@@ -354,6 +357,28 @@ function parseWebviewMessage(raw) {
     if (error instanceof Invalid) return { ok: false, id, error: `${method}: ${error.message}` };
     throw error;
   }
+}
+var OPEN_REQUEST_ID = /^[A-Za-z0-9_-]{16,128}$/;
+function parseNavigateTarget(value) {
+  if (value === null) return null;
+  if (!isRecord(value)) return void 0;
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return void 0;
+  if (keys[0] === "model" && parseModelSpec(value.model)) return { model: value.model };
+  if (keys[0] === "run" && isRelativePath(value.run)) return { run: value.run };
+  return void 0;
+}
+function navigateMessage(target) {
+  return "model" in target ? { kind: "navigate", model: target.model } : { kind: "navigate", run: target.run };
+}
+function openClaimRoute(id) {
+  return { method: "GET", path: `/v1/open/${encodeURIComponent(id)}`, binary: false };
+}
+function openAckRoute(id) {
+  return { method: "POST", path: `/v1/open/${encodeURIComponent(id)}/ack`, body: {}, binary: false };
+}
+function openNackRoute(id, reason) {
+  return { method: "POST", path: `/v1/open/${encodeURIComponent(id)}/nack`, body: { reason }, binary: false };
 }
 function encodePath(path) {
   return path.split("/").map(encodeURIComponent).join("/");
@@ -566,13 +591,22 @@ var HttpServiceClient = class {
   locator;
   io;
   async request(route, signal) {
+    const reply = await this.forward(route, signal, () => this.locator.get());
+    return reply ?? { ok: false, error: { status: 0, message: "no healthy GUI service is registered" } };
+  }
+  requestRegistered(route, signal = new AbortController().signal) {
+    return this.forward(route, signal, () => this.locator.find());
+  }
+  /** Locate the service, send the route, and retry once after a refused connection or a 401. */
+  async forward(route, signal, locate) {
     for (let attempt = 0; ; attempt += 1) {
       let record;
       try {
-        record = await this.locator.get();
+        record = await locate();
       } catch (error) {
         return { ok: false, error: { status: 0, message: messageOf(error) } };
       }
+      if (!record) return null;
       if (signal.aborted) return { ok: false, error: networkError(new Error("request cancelled")) };
       let answer;
       try {
@@ -608,6 +642,7 @@ var PanelBridge = class {
   constructor(webview, client, options = {}) {
     this.webview = webview;
     this.client = client;
+    this.onReady = options.onReady;
     this.reconnectMs = options.reconnectMs ?? RECONNECT_MS;
     this.setTimer = options.setTimer ?? ((callback, ms) => setTimeout(callback, ms));
     this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle));
@@ -620,6 +655,7 @@ var PanelBridge = class {
   reconnectMs;
   setTimer;
   clearTimer;
+  onReady;
   stream = null;
   timer = null;
   subscribed = false;
@@ -645,6 +681,7 @@ var PanelBridge = class {
     const { message } = parsed;
     if (message.kind === "subscribe") return this.subscribe();
     if (message.kind === "unsubscribe") return this.unsubscribe();
+    if (message.kind === "ready") return this.onReady?.();
     const controller = new AbortController();
     this.inflight.add(controller);
     try {
@@ -816,6 +853,57 @@ function renderPanelHtml(indexHtml, options) {
   return html.slice(0, at) + meta + html.slice(at);
 }
 
+// src/open.ts
+var READY_TIMEOUT_MS = 8e3;
+var NOT_THIS_WINDOW = "CADStudio: this window is not the cadstudio repo for that `cad gui open` request; it will fall back to a browser.";
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function describe(target) {
+  if (!target) return "the GUI";
+  return "model" in target ? target.model : `run ${target.run}`;
+}
+async function handleOpenRequest(id, deps) {
+  if (!deps.workspaceRoot) {
+    deps.warn(NOT_THIS_WINDOW);
+    return { status: "unavailable", reason: "this window has no workspace folder" };
+  }
+  const claimed = await deps.request(openClaimRoute(id));
+  if (claimed === null) {
+    deps.warn(NOT_THIS_WINDOW);
+    return { status: "unavailable", reason: "no GUI service is registered for this window's folder" };
+  }
+  if (!claimed.ok) {
+    deps.warn(NOT_THIS_WINDOW);
+    return { status: "unavailable", reason: `the service refused the request: ${claimed.error.message}` };
+  }
+  const body = claimed.result;
+  const target = isRecord2(body) ? parseNavigateTarget(body.target) : void 0;
+  const nack = async (reason) => {
+    deps.warn(`CADStudio: not opening ${describe(target ?? null)}: ${reason}`);
+    await deps.request(openNackRoute(id, reason));
+    return { status: "nacked", reason };
+  };
+  if (!isRecord2(body) || typeof body.repoRoot !== "string" || target === void 0) {
+    return nack("the open request is malformed");
+  }
+  if (!deps.trusted) return nack("this workspace is not trusted");
+  if (body.repoRoot !== deps.workspaceRoot) {
+    return nack(`the request is for ${body.repoRoot}, but this window's folder is ${deps.workspaceRoot}`);
+  }
+  if (!deps.openPanel()) return nack("the GUI panel could not be opened in this window");
+  const timeoutMs = deps.readyTimeoutMs ?? READY_TIMEOUT_MS;
+  const posted = await Promise.race([deps.navigate(target), deps.sleep(timeoutMs).then(() => false)]);
+  if (!posted) return nack(`the GUI panel did not become ready within ${Math.round(timeoutMs / 1e3)} s`);
+  const ack = await deps.request(openAckRoute(id));
+  if (!ack?.ok) {
+    const reason = ack ? ack.error.message : "the GUI service is no longer registered";
+    deps.warn(`CADStudio: opened ${describe(target)}, but \`cad gui open\` was not told (${reason}).`);
+    return { status: "ack-failed", target, reason };
+  }
+  return { status: "acked", target };
+}
+
 // src/tasks.ts
 var vscode = __toESM(require("vscode"));
 var TASK_TYPE = "cadstudio";
@@ -889,6 +977,12 @@ function parseOpenUri(uri) {
   if (path !== OPEN_PATH) return void 0;
   return { query: uri.query };
 }
+function parseOpenRequestId(query) {
+  const values = new URLSearchParams(query).getAll("req");
+  if (values.length === 0) return void 0;
+  if (values.length > 1 || !OPEN_REQUEST_ID.test(values[0])) return null;
+  return values[0];
+}
 
 // src/extension.ts
 var COMMAND_ID = "cadstudio.openGui";
@@ -896,6 +990,7 @@ var VIEW_TYPE = "cadstudio.gui";
 var MEDIA_DIR = "media";
 var UNTRUSTED_MESSAGE = "CADStudio is disabled in untrusted workspaces. Trust this workspace to open the GUI.";
 var NO_FOLDER_MESSAGE = "CADStudio: open the cadstudio repository folder to use the GUI.";
+var BAD_REQUEST_MESSAGE = "CADStudio: ignoring a `cad gui open` URI with a malformed request id.";
 function canonicalPath(path) {
   try {
     return (0, import_node_fs.realpathSync)(path);
@@ -933,6 +1028,10 @@ var GuiPanels = class {
   panel;
   bridge;
   client;
+  /** Whether the current panel's page has sent `ready` since it was (re)loaded. */
+  ready = false;
+  /** The latest navigation waiting for `ready`; an older one is dropped (resolved false). */
+  queued;
   get current() {
     return this.panel;
   }
@@ -973,10 +1072,42 @@ var GuiPanels = class {
     panel.webview.options = panelOptions(this.context.extensionUri);
     this.attach(panel, index);
   }
+  /**
+   * Ask the open panel to show `target`, now if its page is ready, else once it says so.
+   * Resolves true once the message was posted; false without a panel, or if it closed first.
+   */
+  navigate(target) {
+    const panel = this.panel;
+    if (!panel) return Promise.resolve(false);
+    if (target === null) return Promise.resolve(true);
+    const message = navigateMessage(target);
+    if (this.ready) return post(panel, message);
+    this.dropQueued();
+    return new Promise((resolve) => {
+      this.queued = { message, resolve };
+    });
+  }
+  /** The client for this window's folder, or undefined without a folder. */
+  folderClient() {
+    const folder = vscode2.workspace.workspaceFolders?.[0];
+    return folder ? this.clientFor(folder) : void 0;
+  }
   dispose() {
+    this.dropQueued();
     this.bridge?.dispose();
     this.bridge = void 0;
     this.panel = void 0;
+  }
+  dropQueued() {
+    this.queued?.resolve(false);
+    this.queued = void 0;
+  }
+  markReady(panel) {
+    if (panel !== this.panel) return;
+    this.ready = true;
+    const queued = this.queued;
+    this.queued = void 0;
+    if (queued) void post(panel, queued.message).then(queued.resolve);
   }
   refused() {
     if (!vscode2.workspace.isTrusted) {
@@ -1019,19 +1150,42 @@ var GuiPanels = class {
       panel.dispose();
       return;
     }
-    const bridge = new PanelBridge(webview, this.clientFor(folder));
+    const bridge = new PanelBridge(webview, this.clientFor(folder), { onReady: () => this.markReady(panel) });
+    this.dropQueued();
     this.panel = panel;
     this.bridge = bridge;
+    this.ready = false;
     panel.onDidDispose(() => {
       bridge.dispose();
       if (this.panel === panel) {
+        this.dropQueued();
         this.panel = void 0;
         this.bridge = void 0;
+        this.ready = false;
       }
     });
     webview.html = html;
   }
 };
+function post(panel, message) {
+  return Promise.resolve(panel.webview.postMessage(message)).then(
+    (delivered) => delivered,
+    () => false
+  );
+}
+function openRequestDeps(panels) {
+  const folder = vscode2.workspace.workspaceFolders?.[0];
+  const client = panels.folderClient();
+  return {
+    workspaceRoot: folder ? canonicalPath(folder.uri.fsPath) : null,
+    trusted: vscode2.workspace.isTrusted,
+    request: async (route) => client?.requestRegistered ? client.requestRegistered(route) : null,
+    openPanel: () => panels.open() !== void 0,
+    navigate: (target) => panels.navigate(target),
+    warn: (message) => void vscode2.window.showWarningMessage(message),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  };
+}
 function activate(context, deps = defaultDeps) {
   const panels = new GuiPanels(context, deps);
   context.subscriptions.push({ dispose: () => panels.dispose() });
@@ -1055,9 +1209,24 @@ function activate(context, deps = defaultDeps) {
           void vscode2.window.showWarningMessage(
             `CADStudio: unsupported URI path "${uri.path}"`
           );
-          return;
+          return void 0;
         }
-        void vscode2.commands.executeCommand(COMMAND_ID, open.query);
+        const request2 = parseOpenRequestId(open.query);
+        if (request2 === null) {
+          void vscode2.window.showWarningMessage(BAD_REQUEST_MESSAGE);
+          return void 0;
+        }
+        if (request2 === void 0) {
+          void vscode2.commands.executeCommand(COMMAND_ID, open.query);
+          return void 0;
+        }
+        return handleOpenRequest(request2, openRequestDeps(panels)).then(
+          () => void 0,
+          (error) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            void vscode2.window.showWarningMessage(`CADStudio: the \`cad gui open\` request failed: ${reason}`);
+          }
+        );
       }
     })
   );
@@ -1066,6 +1235,7 @@ function deactivate() {
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  BAD_REQUEST_MESSAGE,
   COMMAND_ID,
   GuiPanels,
   MEDIA_DIR,
@@ -1073,7 +1243,9 @@ function deactivate() {
   UNTRUSTED_MESSAGE,
   VIEW_TYPE,
   activate,
+  canonicalPath,
   deactivate,
   defaultDeps,
+  openRequestDeps,
   panelOptions
 });

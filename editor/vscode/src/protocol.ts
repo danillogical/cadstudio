@@ -52,7 +52,15 @@ export type ValidCall =
 export type WebviewMessage =
   | { kind: "request"; id: number; call: ValidCall }
   | { kind: "subscribe" }
-  | { kind: "unsubscribe" };
+  | { kind: "unsubscribe" }
+  /** The page has wired its navigate handler; queued navigation can be delivered. */
+  | { kind: "ready" };
+
+/** What `cad gui open` asks the panel to show. */
+export type NavigateTarget = { model: string } | { run: string };
+
+/** Host -> webview: select this model or run, as if the user had picked it. */
+export type NavigateMessage = { kind: "navigate"; model: string } | { kind: "navigate"; run: string };
 
 /**
  * `ok: false` carries the request id when the envelope had a usable one, so the host can
@@ -205,11 +213,11 @@ function validateCall(method: TransportMethod, args: unknown[]): ValidCall {
 /**
  * Validate an untrusted webview message. Requests must be exactly
  * `{kind: "request", id, method, args}` with a known method and well-typed arguments;
- * `{kind: "subscribe"}` and `{kind: "unsubscribe"}` take no other keys.
+ * `{kind: "subscribe"}`, `{kind: "unsubscribe"}` and `{kind: "ready"}` take no other keys.
  */
 export function parseWebviewMessage(raw: unknown): ParseResult {
   if (!isRecord(raw)) return { ok: false, id: null, error: "message must be an object" };
-  if (raw.kind === "subscribe" || raw.kind === "unsubscribe") {
+  if (raw.kind === "subscribe" || raw.kind === "unsubscribe" || raw.kind === "ready") {
     if (!hasOnlyKeys(raw, ["kind"])) return { ok: false, id: null, error: `${raw.kind} takes no fields` };
     return { ok: true, message: { kind: raw.kind } };
   }
@@ -230,6 +238,40 @@ export function parseWebviewMessage(raw: unknown): ParseResult {
     if (error instanceof Invalid) return { ok: false, id, error: `${method}: ${error.message}` };
     throw error;
   }
+}
+
+/** An open-request id as the service issues it (`secrets.token_urlsafe`); `_OPEN_ID` in server.py. */
+export const OPEN_REQUEST_ID = /^[A-Za-z0-9_-]{16,128}$/;
+
+/**
+ * A claimed request's `target`: null (just open the GUI), `{model}` with a `<project>/<model>`
+ * spec, or `{run}` with a relative run id. `undefined` means the value is malformed.
+ */
+export function parseNavigateTarget(value: unknown): NavigateTarget | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return undefined;
+  if (keys[0] === "model" && parseModelSpec(value.model)) return { model: value.model as string };
+  if (keys[0] === "run" && isRelativePath(value.run)) return { run: value.run };
+  return undefined;
+}
+
+export function navigateMessage(target: NavigateTarget): NavigateMessage {
+  return "model" in target ? { kind: "navigate", model: target.model } : { kind: "navigate", run: target.run };
+}
+
+/** `GET /v1/open/{id}`: claim the request (single use). */
+export function openClaimRoute(id: string): HttpRoute {
+  return { method: "GET", path: `/v1/open/${encodeURIComponent(id)}`, binary: false };
+}
+
+export function openAckRoute(id: string): HttpRoute {
+  return { method: "POST", path: `/v1/open/${encodeURIComponent(id)}/ack`, body: {}, binary: false };
+}
+
+export function openNackRoute(id: string, reason: string): HttpRoute {
+  return { method: "POST", path: `/v1/open/${encodeURIComponent(id)}/nack`, body: { reason }, binary: false };
 }
 
 /** Percent-encode each slash-separated segment, leaving the separators intact. */

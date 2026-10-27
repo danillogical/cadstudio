@@ -1,6 +1,6 @@
 # plan-gui.md: cadstudio GUI (browser + VS Code webview)
 
-**Status:** H0 browser-first fallback selected. G0–G4 merged and verified; H3 PASS (user, 2026-10-26). H4 pending (user, laptop). G3c onward runs on the laptop with local workers instead of packetd; pushes still go through webstudio.
+**Status:** H0 browser-first fallback selected. G0–G5 merged and verified; H3 and H4 PASS (user, 2026-10-26). H5 pending (user, laptop). G3c onward runs on the laptop with local workers instead of packetd; pushes still go through webstudio.
 **Date:** 2026-10-25.
 **Started from:** `~/Downloads/plan-draft-gui.md`, adapted to the repo as it stands at `81649e6`.
 **Runs on:** webstudio.local, through packetd (Codex skill `packetd`, MCP server `http://127.0.0.1:7766/mcp`).
@@ -51,6 +51,10 @@ What changed from the draft, after reading the repo:
 **H3 (2026-10-26): PASS**, reported by the user.
 
 **G4 execution (2026-10-26):** done on the laptop by local workers; one implemented it and another wrote the gating tests. The webview loads the committed `media/` copy of `ui/dist` under the CSP `default-src 'none'; script-src 'nonce-N'; style-src 'nonce-N'; connect-src 'none'; base-uri 'none'; form-action 'none'`. `VsCodeTransport` posts every call to the extension host, which validates it against an allowlist and forwards it to the health-checked service. Answers, artifact bytes and SSE events return as messages, and the token stays in the host. Artifacts now load from bytes (`getArtifact`), so the webview never fetches a URL. The shared transport contract suite exposed one mismatch, now fixed: a job reply without `job` is rejected by both transports. Merge gate: 1,551 Python/physics tests, 216 UI tests, 471 extension tests, builds, a deterministic committed extension build, `uv.lock` unchanged, mirror scan clean. The smoke test passes when run with `node` outside the sandbox; under `npm` the sandbox blocks binding the port. Not verified, left for H4: the live install, the panel loading its script and stylesheet in a real webview, panel restore after a reload, and the service pid staying the same.
+
+**H4 (2026-10-26): PASS**, reported by the user. This also confirms the H0 workspace install that was deferred: the extension installed from Workspace Recommendations and opened in the same window.
+
+**G5 execution (2026-10-26):** done on the laptop by local workers; one implemented it and another wrote the gating tests (119 Python, plus extension and UI tests). Open requests are in-memory, single use and expire after 60 s. The CLI waits up to 10 s for an ack and reports a nack's reason at once. When it stops waiting, it nacks its own request so a late claim can't open a second view. Ack only follows the navigate message being posted to the panel. A window whose folder or service differs can't see the request, so that case ends in the timeout. Merge gate: 1,670 Python/physics tests, 233 UI tests, 528 extension tests, builds, deterministic committed extension output, `uv.lock` unchanged, mirror scan clean. The first two full runs each failed one end-to-end test. The CLI redacted tokens to `…`, and by that point in the suite the test process decoded the CLI's stderr as US-ASCII, so it crashed. Redaction now writes `REDACTED`. What switches the process encoding wasn't identified. Not verified, left for H5: a real `code --open-url`, the extension acking, panel navigation, and the wrong-window and uninstalled-extension fallbacks.
 
 ## 1. Goals and boundaries
 
@@ -180,6 +184,10 @@ Dependency direction (enforced by a test in G1):
 | `GET /v1/jobs/{id}`, `POST /v1/jobs/{id}/cancel` | job state, log tail, artifacts |
 | `GET /v1/artifacts/{path}` | stream a file **only** from `out/<project>/…/scene/` or a `.gui/` trajectory dir, after canonicalising the path |
 | `GET /v1/events` | SSE stream of job and artifact changes |
+| `POST /v1/open` | `cad gui open`: create a one-time open request for `{model}`, `{run}` or `{}` (validated like the scene and trajectory routes); `{id, expiresAt, target}`, single use, expires after 60 s, held in memory |
+| `GET /v1/open/{id}` | the extension claims the request: `{id, target, repoRoot}`; a second claim is 404, an expired one 410 |
+| `POST /v1/open/{id}/ack`, `POST /v1/open/{id}/nack` | the extension opened the target, or refused with `{reason}` (wrong repo, untrusted, panel not ready); the CLI also nacks its own request when it stops waiting |
+| `GET /v1/open/{id}/status` | what `cad gui open` polls: `pending`, `claimed`, `acked`, `nacked` (with `reason`) or `expired` |
 | `GET /` | the built `ui/dist` |
 
 Rules:

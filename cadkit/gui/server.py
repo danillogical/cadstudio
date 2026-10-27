@@ -36,6 +36,10 @@ Service surface (plan-gui.md section 3.2; ``schemaVersion`` on every response)
 | ``GET /v1/jobs/{id}``, ``POST /v1/jobs/{id}/cancel`` | job state, log tail, artifacts |
 | ``GET /v1/artifacts/{path}`` | stream a file **only** from ``out/<project>/…/scene/`` or a ``.gui/`` trajectory dir, after canonicalising the path |
 | ``GET /v1/events`` | SSE stream of job and artifact changes |
+| ``POST /v1/open`` | create a one-time open request for ``{model}``, ``{run}`` or ``{}`` (``cad gui open``) |
+| ``GET /v1/open/{id}`` | claim an open request (single use): its target and the repo root |
+| ``POST /v1/open/{id}/ack``, ``POST /v1/open/{id}/nack`` | the editor opened the target, or refused with ``{reason}`` |
+| ``GET /v1/open/{id}/status`` | ``pending``, ``claimed``, ``acked``, ``nacked`` (with reason) or ``expired`` |
 | ``GET /`` | the built ``ui/dist`` |
 
 Rules:
@@ -63,6 +67,23 @@ Deviations and response details
 - ``POST /v1/runs`` accepts a scenario, acceptance or options path only when it is in that
   listing, spelled repo-relative (as listed) or project-relative. Traversal, absolute and
   outside-project paths are 403, a missing file is 400, and an existing unlisted file is 403.
+
+Open requests (``cad gui open``; all token-protected, held in memory only)
+
+- ``POST /v1/open`` takes at most one of ``{"model": "<project>/<model>"}`` (must resolve, else
+  404) or ``{"run": "<runId>"}`` (validated like the trajectory route: 403 for unsafe paths, 404
+  unless it is a run dir under ``out/``); ``{}`` opens the GUI with no target. 201
+  ``{id, expiresAt, target}``, where ``target`` is ``{"model"}``, ``{"run"}`` or ``null`` and
+  ``expiresAt`` is epoch seconds. Ids are random, single use, and expire ``OPEN_TTL_S`` (60 s)
+  after creation.
+- ``GET /v1/open/{id}`` claims a pending request: 200 ``{id, target, repoRoot}``. Unknown,
+  already claimed or resolved ids are 404; an expired one is 410.
+- ``POST /v1/open/{id}/ack`` (empty body) is accepted only for a claimed request;
+  ``POST /v1/open/{id}/nack`` with ``{"reason": str}`` for a pending or claimed one (the CLI nacks
+  its own request when it stops waiting, so a late claim cannot open a second view). Either
+  answers 200 ``{id, state, reason}``; a resolved request is 409, expired 410, unknown 404.
+- ``GET /v1/open/{id}/status`` answers 200 ``{id, state, reason, expiresAt}``; resolved requests
+  stay queryable for ``OPEN_RETAIN_S`` after expiry, then answer 404.
 """
 from __future__ import annotations
 
@@ -111,6 +132,14 @@ _RUN_TRAJECTORY = re.compile(r"^/v1/runs/(.+)/trajectory$")
 _JOB = re.compile(r"^/v1/jobs/([^/]+)$")
 _JOB_CANCEL = re.compile(r"^/v1/jobs/([^/]+)/cancel$")
 _ARTIFACT = re.compile(r"^/v1/artifacts/(.*)$")
+_OPEN = re.compile(r"^/v1/open/([^/]+)$")
+_OPEN_ACTION = re.compile(r"^/v1/open/([^/]+)/(ack|nack|status)$")
+_OPEN_ID = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+
+OPEN_TTL_S = 60.0
+OPEN_RETAIN_S = 300.0
+MAX_OPEN_REQUESTS = 256
+MAX_REASON_CHARS = 500
 
 _CAD_LOCK = threading.Lock()
 
@@ -254,6 +283,117 @@ class JobQueue:
             self.service.run_job(job)
 
 
+class OpenRequestError(Exception):
+    """An open-request operation refused with an HTTP status (404, 409, 410 or 429)."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+@dataclass
+class OpenRequest:
+    """One ``cad gui open`` request; ``target`` is ``{"model": ...}``, ``{"run": ...}`` or None."""
+
+    id: str
+    target: dict | None
+    createdAt: float
+    expiresAt: float
+    state: str = "pending"
+    reason: str | None = None
+
+    def to_status(self) -> dict:
+        return {"id": self.id, "state": self.state, "reason": self.reason,
+                "expiresAt": self.expiresAt}
+
+
+class OpenRequestStore:
+    """In-memory, single-use open requests with an injectable clock and id source.
+
+    ``pending`` -> ``claimed`` (``claim``) -> ``acked`` (``ack``) or ``nacked`` (``nack``, also
+    from ``pending``). An unresolved request becomes ``expired`` at ``expiresAt``; every entry is
+    forgotten ``retain_s`` after that.
+    """
+
+    def __init__(self, *, ttl_s: float = OPEN_TTL_S, retain_s: float = OPEN_RETAIN_S,
+                 max_requests: int = MAX_OPEN_REQUESTS, clock=time.time,
+                 make_id=lambda: secrets.token_urlsafe(18)) -> None:
+        self.ttl_s = ttl_s
+        self.retain_s = retain_s
+        self.max_requests = max_requests
+        self._clock = clock
+        self._make_id = make_id
+        self._lock = threading.Lock()
+        self._requests: dict[str, OpenRequest] = {}
+
+    def create(self, target: dict | None) -> OpenRequest:
+        with self._lock:
+            now = self._prune()
+            if len(self._requests) >= self.max_requests:
+                raise OpenRequestError(429, "too many open requests")
+            request_id = self._make_id()
+            while request_id in self._requests:
+                request_id = self._make_id()
+            request = OpenRequest(id=request_id, target=dict(target) if target else None,
+                                  createdAt=now, expiresAt=now + self.ttl_s)
+            self._requests[request_id] = request
+            return request
+
+    def claim(self, request_id: str) -> OpenRequest:
+        """Hand the request out once; any later claim is refused."""
+        with self._lock:
+            request = self._get(request_id)
+            if request.state == "expired":
+                raise OpenRequestError(410, "open request expired")
+            if request.state != "pending":
+                raise OpenRequestError(404, "unknown or already claimed open request")
+            request.state = "claimed"
+            return request
+
+    def ack(self, request_id: str) -> OpenRequest:
+        with self._lock:
+            request = self._resolvable(request_id, ("claimed",))
+            request.state = "acked"
+            return request
+
+    def nack(self, request_id: str, reason: str) -> OpenRequest:
+        with self._lock:
+            request = self._resolvable(request_id, ("pending", "claimed"))
+            request.state = "nacked"
+            request.reason = reason
+            return request
+
+    def status(self, request_id: str) -> dict:
+        with self._lock:
+            return self._get(request_id).to_status()
+
+    def _resolvable(self, request_id: str, states: tuple[str, ...]) -> OpenRequest:
+        request = self._get(request_id)
+        if request.state == "expired":
+            raise OpenRequestError(410, "open request expired")
+        if request.state not in states:
+            raise OpenRequestError(409, f"open request is {request.state}")
+        return request
+
+    def _get(self, request_id: str) -> OpenRequest:
+        self._prune()
+        request = self._requests.get(request_id)
+        if request is None:
+            raise OpenRequestError(404, "unknown or already claimed open request")
+        return request
+
+    def _prune(self) -> float:
+        """Expire overdue unresolved requests and forget old ones; returns the clock reading."""
+        now = self._clock()
+        for request_id, request in list(self._requests.items()):
+            if request.state in ("pending", "claimed") and now >= request.expiresAt:
+                request.state = "expired"
+            if now >= request.expiresAt + self.retain_s:
+                del self._requests[request_id]
+        return now
+
+
 class GuiService:
     """The loopback HTTP service, its job table and its discovery record."""
 
@@ -276,6 +416,7 @@ class GuiService:
 
         self.events = EventBus()
         self.queue = JobQueue(self)
+        self.open_requests = OpenRequestStore()
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
         self.server.daemon_threads = True
         self.server.service = self
@@ -800,6 +941,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(405, "method not allowed")
         if path == "/v1/events":
             return self._require(method, "GET") or self._events()
+        if path == "/v1/open":
+            return self._require(method, "POST") or self._open_create()
+        match = _OPEN_ACTION.fullmatch(path)
+        if match:
+            request_id, action = match.groups()
+            return (self._require(method, "GET" if action == "status" else "POST")
+                    or self._open_action(request_id, action))
+        match = _OPEN.fullmatch(path)
+        if match:
+            return self._require(method, "GET") or self._open_claim(match.group(1))
         raise _HttpError(404, "not found")
 
     def _require(self, method: str, wanted: str) -> None:
@@ -979,23 +1130,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._send_json(200, {"runs": runs})
 
     def _run_trajectory(self, run_id: str) -> None:
-        root = self.service.out_root.resolve()
-        parts = run_id.split("/")
-        if (not run_id or run_id.startswith("/") or "\\" in run_id or "\x00" in run_id
-                or any(part in ("", ".", "..") for part in parts)):
-            raise _HttpError(403, "forbidden run path")
-        candidate = self.service.out_root / run_id
-        if candidate.is_symlink():
-            raise _HttpError(403, "run directory is a symlink")
-        try:
-            resolved = candidate.resolve(strict=True)
-        except (OSError, RuntimeError):
-            raise _HttpError(404, f"unknown run {run_id}") from None
-        if not resolved.is_relative_to(root):
-            raise _HttpError(403, "run is outside out/")
-        if not resolved.is_dir() or not (resolved / "summary.json").is_file() \
-                or not (resolved / "states.npz").is_file():
-            raise _HttpError(404, f"unknown run {run_id}")
+        resolved = _resolve_run_dir(self.service, run_id)
 
         with self.service.run_lock(run_id):
             manifest = resolved / "manifest.json"
@@ -1068,6 +1203,50 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         job.payload = {"cmd": command, "out": out_dir}
         self.service.queue.submit(job)
         self._send_json(202, {"job": job.to_dict()})
+
+    def _open_create(self) -> None:
+        target = _open_target(self.service, self._read_body())
+        try:
+            request = self.service.open_requests.create(target)
+        except OpenRequestError as exc:
+            raise _open_error(exc) from None
+        self._send_json(201, {"id": request.id, "expiresAt": request.expiresAt,
+                              "target": request.target})
+
+    def _open_claim(self, request_id: str) -> None:
+        if not _OPEN_ID.fullmatch(request_id):
+            raise _HttpError(404, "unknown or already claimed open request")
+        try:
+            request = self.service.open_requests.claim(request_id)
+        except OpenRequestError as exc:
+            raise _open_error(exc) from None
+        self._send_json(200, {"id": request.id, "target": request.target,
+                              "repoRoot": str(self.service.repo_root)})
+
+    def _open_action(self, request_id: str, action: str) -> None:
+        if not _OPEN_ID.fullmatch(request_id):
+            raise _HttpError(404, "unknown or already claimed open request")
+        store = self.service.open_requests
+        try:
+            if action == "status":
+                return self._send_json(200, store.status(request_id))
+            doc = self._read_body()
+            if not isinstance(doc, dict):
+                raise _HttpError(400, "body must be a JSON object")
+            if action == "ack":
+                if doc:
+                    raise _HttpError(400, "ack takes no fields")
+                request = store.ack(request_id)
+            else:
+                if set(doc) != {"reason"}:
+                    raise _HttpError(400, "nack takes exactly {\"reason\"}")
+                reason = doc["reason"]
+                if not isinstance(reason, str) or not reason.strip():
+                    raise _HttpError(400, "reason must be a non-empty string")
+                request = store.nack(request_id, reason.strip()[:MAX_REASON_CHARS])
+        except OpenRequestError as exc:
+            raise _open_error(exc) from None
+        self._send_json(200, request.to_status())
 
     def _artifact(self, rel: str) -> None:
         if not rel or rel.startswith("/") or "\\" in rel or "\x00" in rel:
@@ -1179,6 +1358,59 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 # -- small helpers ---------------------------------------------------------------------
+
+
+def _resolve_run_dir(service: GuiService, run_id: str) -> Path:
+    """The run dir ``run_id`` names under ``out/``: 403 for unsafe paths, 404 unless it is a run."""
+    root = service.out_root.resolve()
+    parts = run_id.split("/")
+    if (not run_id or run_id.startswith("/") or "\\" in run_id or "\x00" in run_id
+            or any(part in ("", ".", "..") for part in parts)):
+        raise _HttpError(403, "forbidden run path")
+    candidate = service.out_root / run_id
+    if candidate.is_symlink():
+        raise _HttpError(403, "run directory is a symlink")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise _HttpError(404, f"unknown run {run_id}") from None
+    if not resolved.is_relative_to(root):
+        raise _HttpError(403, "run is outside out/")
+    if not resolved.is_dir() or not (resolved / "summary.json").is_file() \
+            or not (resolved / "states.npz").is_file():
+        raise _HttpError(404, f"unknown run {run_id}")
+    return resolved
+
+
+def _open_target(service: GuiService, doc) -> dict | None:
+    """Validate a ``POST /v1/open`` body into ``{"model"}``, ``{"run"}`` or None."""
+    if not isinstance(doc, dict):
+        raise _HttpError(400, "body must be a JSON object")
+    extra = set(doc) - {"model", "run"}
+    if extra:
+        raise _HttpError(400, f"unexpected key(s): {', '.join(sorted(extra))}")
+    if "model" in doc and "run" in doc:
+        raise _HttpError(400, "give model or run, not both")
+    if "model" in doc:
+        spec = doc["model"]
+        if not isinstance(spec, str) or not spec:
+            raise _HttpError(400, "model must be a non-empty string")
+        project_name, _, model = spec.partition("/")
+        if not _SEGMENT.fullmatch(project_name) or not _SEGMENT.fullmatch(model):
+            raise _HttpError(404, f"unknown model {spec}")
+        _resolve_or_404(spec)
+        return {"model": spec}
+    if "run" in doc:
+        run_id = doc["run"]
+        if not isinstance(run_id, str) or not run_id:
+            raise _HttpError(400, "run must be a non-empty string")
+        _resolve_run_dir(service, run_id)
+        return {"run": run_id}
+    return None
+
+
+def _open_error(exc: OpenRequestError) -> _HttpError:
+    return _HttpError(exc.status, exc.message)
 
 
 def _resolve_or_404(spec: str) -> Project:
