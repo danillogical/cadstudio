@@ -14,9 +14,10 @@ import numpy as np
 
 from . import require_mujoco
 from .evidence import EvidenceError, bounded_regular_bytes, raw_sha256
-from .replay import ReplayError, parse_saved_scene
+from .replay import ReplayError, _declared_caps, parse_saved_scene
 from .state_archive import (
     MAX_ARCHIVE_BYTES,
+    MAX_ARCHIVE_ROWS,
     ArchiveError,
     load_state_meta_bytes,
     read_state_archive,
@@ -65,15 +66,19 @@ class Playback:
                 for p in sorted((self.run_dir / "assets").glob("*.stl"))
             }
             meta_raw = self._read("state_meta.json", artifacts, verify)
-            npz_raw = self._read("states.npz", artifacts, verify)
             scenario_raw = self._read("scenario.json", artifacts, verify)
+            # The run's own scenario budgets size the archive caps, as replay does (8 GiB ceiling).
+            caps, state_bytes, max_rows = _declared_caps(
+                scenario_raw, max_bytes=MAX_ARCHIVE_BYTES, max_rows=MAX_ARCHIVE_ROWS)
+            npz_raw = self._read("states.npz", artifacts, verify,
+                                 max_bytes=caps.get("states.npz", MAX_ARCHIVE_BYTES))
             xml = xml_filter(self.xml) if xml_filter else self.xml
             self.model = parse_saved_scene(xml, self.assets)
             self.data = self.mujoco.MjData(self.model)
             meta = load_state_meta_bytes(meta_raw)
             self.state = read_state_archive(
                 npz_raw, expected_members=required_members(meta["layout"]),
-                max_bytes=max(MAX_ARCHIVE_BYTES, len(npz_raw)))
+                max_bytes=max(state_bytes, len(npz_raw)), max_rows=max_rows)
             self.times = np.asarray(self.state["time"], dtype=np.float64).reshape(-1)
             self.phase_names = [str(v) for v in self.state["phase_names"]]
             self.phase_index = np.asarray(self.state["phase_index"])
@@ -86,10 +91,11 @@ class Playback:
                 OSError, ValueError) as exc:
             raise PlaybackError(str(exc)) from None
 
-    def _read(self, rel: str, artifacts: dict, verify: bool) -> bytes:
+    def _read(self, rel: str, artifacts: dict, verify: bool,
+              max_bytes: int = MAX_ARCHIVE_BYTES) -> bytes:
         if not verify:
             return (self.run_dir / rel).read_bytes()
-        raw = bounded_regular_bytes(self.run_dir, rel, max_bytes=MAX_ARCHIVE_BYTES)
+        raw = bounded_regular_bytes(self.run_dir, rel, max_bytes=max_bytes)
         entry = artifacts.get(rel)
         if not isinstance(entry, dict) or "sha256" not in entry:
             raise PlaybackError(

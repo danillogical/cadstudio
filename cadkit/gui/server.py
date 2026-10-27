@@ -30,7 +30,7 @@ Service surface (plan-gui.md section 3.2; ``schemaVersion`` on every response)
 | ``GET /v1/models`` | ``cad list`` as JSON |
 | ``GET /v1/models/{project}/{model}/scene`` | latest scene manifest, or 404 with the command that would build it |
 | ``POST /v1/models/{project}/{model}/build`` | job: build, check, then scene export |
-| ``GET /v1/runs`` | physics run dirs found under ``out/`` (has ``summary.json`` and ``states.npz``) |
+| ``GET /v1/runs`` | physics run dirs found under ``out/`` (has ``summary.json`` and ``states.npz``), newest first |
 | ``GET /v1/runs/{runId}/trajectory`` | trajectory manifest (exports on first request) |
 | ``POST /v1/runs`` | job: ``cad physics run`` with a scenario, acceptance and options chosen from files already in the project |
 | ``GET /v1/jobs/{id}``, ``POST /v1/jobs/{id}/cancel`` | job state, log tail, artifacts |
@@ -968,9 +968,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 with contextlib.suppress(OSError, ValueError):
                     status = json.loads((current / "summary.json").read_text(
                         encoding="utf-8")).get("status")
+                modified = None
+                with contextlib.suppress(OSError):
+                    modified = (current / "summary.json").stat().st_mtime
                 runs.append({"runId": current.relative_to(root).as_posix(),
-                             "path": str(current), "status": status})
+                             "path": str(current), "status": status, "modified": modified})
+        # Most recent first (by summary.json mtime); ties and unreadable times fall back to runId.
         runs.sort(key=lambda run: run["runId"])
+        runs.sort(key=lambda run: run["modified"] or 0.0, reverse=True)
         self._send_json(200, {"runs": runs})
 
     def _run_trajectory(self, run_id: str) -> None:

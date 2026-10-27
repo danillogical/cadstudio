@@ -570,3 +570,21 @@ def test_runs_and_trajectory(svc):
     assert headers["Content-Type"] == "application/octet-stream"
     status, _, _ = req_json(svc, "GET", "/v1/runs/fixtures/drop/nope/trajectory")
     assert status == 404
+
+
+def test_runs_are_listed_newest_first(svc):
+    # Listing only needs the two marker files, so fake runs with set mtimes are enough.
+    stamps = {"old/run": 1_000_000.0, "new/run": 3_000_000.0, "mid/run": 2_000_000.0}
+    for run_id, mtime in stamps.items():
+        run_dir = svc.out_root / "ordering" / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "summary.json").write_text(json.dumps({"status": "PASS"}))
+        (run_dir / "states.npz").write_bytes(b"")
+        os.utime(run_dir / "summary.json", (mtime, mtime))
+
+    status, doc, _ = req_json(svc, "GET", "/v1/runs")
+    assert status == 200
+    listed = [run for run in doc["runs"] if run["runId"].startswith("ordering/")]
+    assert [run["runId"] for run in listed] == ["ordering/new/run", "ordering/mid/run",
+                                                "ordering/old/run"]
+    assert [run["modified"] for run in listed] == [3_000_000.0, 2_000_000.0, 1_000_000.0]

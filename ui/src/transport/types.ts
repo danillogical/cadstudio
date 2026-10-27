@@ -73,6 +73,8 @@ export interface RunEntry {
   runId: string;
   path: string;
   status: string | null;
+  /** summary.json mtime in epoch seconds; the server lists runs newest first. */
+  modified: number | null;
 }
 
 export interface RunList {
