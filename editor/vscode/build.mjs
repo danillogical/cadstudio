@@ -1,11 +1,12 @@
 // Builds the workspace extension into .vscode/extensions/cadstudio.
 import { build } from "esbuild";
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const defaultOut = resolve(here, "../../.vscode/extensions/cadstudio");
+const uiDist = resolve(here, "../../ui/dist");
 
 // The built manifest is a subset of the source manifest; tooling keys stay out.
 const MANIFEST_KEYS = [
@@ -37,8 +38,24 @@ function writeManifest(outDir) {
   writeFileSync(join(outDir, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
 }
 
+// Byte-for-byte copy of ui/dist into media/, in sorted order so the result never depends on readdir.
+function copyTree(from, to) {
+  mkdirSync(to, { recursive: true });
+  const entries = readdirSync(from, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1));
+  for (const entry of entries) {
+    const source = join(from, entry.name);
+    const target = join(to, entry.name);
+    if (entry.isDirectory()) copyTree(source, target);
+    else if (entry.isFile()) copyFileSync(source, target);
+    else throw new Error(`ui/dist/${entry.name} is not a regular file`);
+  }
+}
+
 async function main() {
   const outDir = parseOutDir(process.argv.slice(2));
+  if (!existsSync(join(uiDist, "index.html"))) {
+    throw new Error("ui/dist is missing; run `npm ci && npm run build` in ui/ first");
+  }
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(join(outDir, "dist"), { recursive: true });
 
@@ -59,15 +76,7 @@ async function main() {
     target: "node18",
     external: ["vscode"],
   });
-  await build({
-    ...shared,
-    entryPoints: ["src/webview.ts"],
-    outfile: join(outDir, "dist/webview.js"),
-    platform: "browser",
-    format: "iife",
-    target: "es2022",
-  });
-
+  copyTree(uiDist, join(outDir, "media"));
   writeManifest(outDir);
   copyFileSync(join(here, "README.extension.md"), join(outDir, "README.md"));
 }

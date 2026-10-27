@@ -127,12 +127,6 @@ async function waitJob(transport, job) {
   return current;
 }
 
-async function fetchBytes(url) {
-  const response = await fetch(url);
-  check(response.ok, `artifact ${url.replace(/token=[^&]+/, "token=…")} returned ${response.status}`);
-  return response.arrayBuffer();
-}
-
 function isGlb(bytes) {
   return bytes.byteLength > 12 && new TextDecoder().decode(new Uint8Array(bytes, 0, 4)) === "glTF";
 }
@@ -187,7 +181,7 @@ async function main() {
     check(scene.stale === false, "the scene is stale");
     check(scene.scene.parts.length > 0, "the scene has no parts");
     const part = scene.scene.parts[0];
-    const partBytes = await fetchBytes(transport.artifactUrl(`${scene.artifactBase}/${part.mesh}`));
+    const partBytes = await transport.getArtifact(`${scene.artifactBase}/${part.mesh}`);
     check(isGlb(partBytes), `part ${part.id} is not a GLB`);
     log(`scene ok (${scene.scene.parts.length} part(s), ${part.id}.glb ${partBytes.byteLength} bytes)`);
 
@@ -196,7 +190,7 @@ async function main() {
     const response = await transport.getTrajectory(run.runId);
     const doc = frames.parseTrajectory(response.trajectory);
     const poses = frames.parsePoses(
-      await fetchBytes(transport.artifactUrl(`${response.artifactBase}/${doc.poses.path}`)),
+      await transport.getArtifact(`${response.artifactBase}/${doc.poses.path}`),
       doc.frameCount,
       doc.bodies.length,
     );
@@ -204,7 +198,7 @@ async function main() {
     const sampled = frames.posesAt(doc.times, poses, doc.bodies.length, middle);
     check(sampled.length === doc.bodies.length, "pose sampling lost bodies");
     const mesh = doc.bodies[0].meshes[0];
-    const meshBytes = await fetchBytes(transport.artifactUrl(`${response.artifactBase}/${mesh.mesh}`));
+    const meshBytes = await transport.getArtifact(`${response.artifactBase}/${mesh.mesh}`);
     check(isGlb(meshBytes), `body mesh ${mesh.mesh} is not a GLB`);
     log(`trajectory ok (${doc.frameCount} frames, ${doc.bodies.length} bodies, ${doc.phases.length} phases)`);
     log("PASS");

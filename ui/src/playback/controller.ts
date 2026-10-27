@@ -6,7 +6,6 @@ import { bannerFor, renderBanner } from "../app/banner";
 import { afterJob, afterLoad, emptyDisplay, type DisplayState } from "../app/jobs";
 import { disposeScene } from "../scene/mapping";
 import {
-  TransportError,
   type CadStudioTransport,
   type Job,
   type TrajectoryDoc,
@@ -72,19 +71,12 @@ export interface PlaybackOptions {
     loadBytes: (meshPath: string) => Promise<ArrayBuffer>,
     initial: readonly Pose[],
   ) => Promise<LoadedTrajectory>;
-  loadBytes?: (url: string) => Promise<ArrayBuffer>;
+  /** Bytes of an `out/`-relative artifact; defaults to `transport.getArtifact`. */
+  loadBytes?: (path: string) => Promise<ArrayBuffer>;
   /** Milliseconds, monotonic. */
   now?: () => number;
   requestFrame?: (callback: () => void) => number;
   cancelFrame?: (handle: number) => void;
-}
-
-async function fetchBytes(url: string): Promise<ArrayBuffer> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new TransportError(response.status, `artifact request failed: ${response.statusText}`);
-  }
-  return response.arrayBuffer();
 }
 
 function seconds(value: number): string {
@@ -96,7 +88,7 @@ export class PlaybackController {
   private readonly viewport: TrajectoryViewport;
   private readonly elements: PlaybackElements;
   private readonly buildTrajectory: NonNullable<PlaybackOptions["buildTrajectory"]>;
-  private readonly loadBytes: (url: string) => Promise<ArrayBuffer>;
+  private readonly loadBytes: (path: string) => Promise<ArrayBuffer>;
   private readonly now: () => number;
   private readonly requestFrame: (callback: () => void) => number;
   private readonly cancelFrame: (handle: number) => void;
@@ -115,7 +107,7 @@ export class PlaybackController {
     this.viewport = options.viewport;
     this.elements = options.elements;
     this.buildTrajectory = options.buildTrajectory ?? buildTrajectoryGroup;
-    this.loadBytes = options.loadBytes ?? fetchBytes;
+    this.loadBytes = options.loadBytes ?? ((path) => this.transport.getArtifact(path));
     this.now = options.now ?? (() => performance.now());
     this.requestFrame = options.requestFrame ?? ((cb) => requestAnimationFrame(cb));
     this.cancelFrame = options.cancelFrame ?? ((handle) => cancelAnimationFrame(handle));
@@ -167,16 +159,16 @@ export class PlaybackController {
       const response = await this.transport.getTrajectory(runId);
       if (token !== this.loadToken) return;
       const doc = parseTrajectory(response.trajectory);
-      const url = (rel: string) => this.transport.artifactUrl(`${response.artifactBase}/${rel}`);
-      const poses = parsePoses(await this.loadBytes(url(doc.poses.path)), doc.frameCount, doc.bodies.length);
+      const artifact = (rel: string) => `${response.artifactBase}/${rel}`;
+      const poses = parsePoses(await this.loadBytes(artifact(doc.poses.path)), doc.frameCount, doc.bodies.length);
       let contacts: LoadedRun["contacts"] = null;
       if (doc.contacts) {
-        const data = parseContacts(await this.loadBytes(url(doc.contacts.path)), doc.contacts.count, doc.frameCount);
+        const data = parseContacts(await this.loadBytes(artifact(doc.contacts.path)), doc.contacts.count, doc.frameCount);
         contacts = { data, index: contactIndex(data, doc.frameCount) };
       }
       if (token !== this.loadToken) return;
       const initial = posesAt(doc.times, poses, doc.bodies.length, doc.times[0]);
-      const scene = await this.buildTrajectory(doc, (mesh) => this.loadBytes(url(mesh)), initial);
+      const scene = await this.buildTrajectory(doc, (mesh) => this.loadBytes(artifact(mesh)), initial);
       if (token !== this.loadToken) {
         disposeScene(scene);
         return;

@@ -5,6 +5,22 @@ in `.vscode/extensions/cadstudio/` and is committed for local workspace installa
 The GUI plan currently follows the browser-first fallback; editor integration remains optional
 until its live checks are completed.
 
+The extension hosts the same `ui/` bundle the browser uses, in a webview panel:
+
+- **Open GUI** opens the panel, or reveals it if it is already open. A window reload restores it.
+- **Assets.** The build copies `ui/dist` into `media/`. The panel loads it through webview URIs
+  under a strict CSP: `default-src 'none'`, scripts and the stylesheet only with a per-load nonce,
+  `connect-src 'none'`.
+- **Service.** The extension host reads `out/.gui/service.json`. It uses the service only if
+  `/v1/health` answers for the same pid and this workspace folder as repo root. Otherwise it runs
+  `uv run --frozen --extra physics cad gui serve --no-browser --json` in a "GUI service" task and
+  waits up to 180 s for it to register. Closing the panel or the window leaves the service running.
+- **Messages.** The webview's `VsCodeTransport` posts each call to the host. The host checks it
+  against the transport method list and its argument rules, then forwards it to that call's
+  service endpoint. Answers, artifact bytes and SSE events come back as messages. The service
+  token stays in the extension host.
+- **Trust.** The extension does not run in untrusted workspaces.
+
 ## Prerequisites
 
 - Node.js >= 22
@@ -19,6 +35,9 @@ npm test        # tsc --noEmit, then vitest (includes the stale-build guard)
 npm run build   # writes ../../.vscode/extensions/cadstudio/
 ```
 
+Build `ui/` first (`cd ui && npm ci && npm run build`): the extension build copies `ui/dist`
+into `media/` and fails if it is missing, and the stale-build guard compares `media/` too.
+
 Commit `.vscode/extensions/cadstudio/` after every source change; the build test fails when
 the committed build differs from a fresh one.
 
@@ -28,8 +47,8 @@ the committed build differs from a fresh one.
 2. Open the Extensions view and find "cadstudio" under **Workspace Recommendations**.
 3. Choose **Install Workspace Extension** (VS Code installs it from
    `.vscode/extensions/cadstudio/`; there is no marketplace or global install).
-4. Run **CADStudio: Open GUI** from the Command Palette. The panel shows the workspace folder,
-   the extension version, the URI query and "Webview script: loaded".
+4. Run **CADStudio: Open GUI** from the Command Palette. The panel shows the CADStudio GUI; the
+   first open starts the "GUI service" task if no service is running for this folder.
 
 ## URI route
 
@@ -37,11 +56,11 @@ the committed build differs from a fresh one.
 code --open-url "vscode://danillogical.cadstudio/open?x=1"
 ```
 
-The URI runs the same command and shows `x=1` in the panel.
+The URI runs the same command. The query is not used yet; `cad gui open` (G5) will define it.
 
 ## Picking up a rebuild
 
-Reload or reinstall requirements remain unverified and will be checked during G4/G5.
+Reload or reinstall requirements remain unverified; gate H4 checks them.
 
 ## H0 findings
 

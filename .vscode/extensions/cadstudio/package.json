@@ -10,13 +10,31 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onCommand:cadstudio.openGui",
-    "onUri"
+    "onUri",
+    "onWebviewPanel:cadstudio.gui"
   ],
   "contributes": {
     "commands": [
       {
         "command": "cadstudio.openGui",
         "title": "CADStudio: Open GUI"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "cadstudio",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "enum": [
+              "serve"
+            ],
+            "description": "The CADStudio task to run; `serve` runs `cad gui serve`."
+          }
+        }
       }
     ]
   },

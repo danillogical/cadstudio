@@ -220,6 +220,6 @@ export interface CadStudioTransport {
   getJob(id: string): Promise<Job>;
   cancelJob(id: string): Promise<Job>;
   subscribe(listener: (event: ServiceEvent) => void): () => void;
-  /** URL for an `out/`-relative artifact path. */
-  artifactUrl(path: string): string;
+  /** Bytes of an `out/`-relative artifact path (a scene GLB, `poses.bin`, ...). */
+  getArtifact(path: string): Promise<ArrayBuffer>;
 }

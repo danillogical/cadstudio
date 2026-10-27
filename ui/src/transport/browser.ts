@@ -11,6 +11,7 @@ import {
   type TrajectoryResponse,
   TransportError,
 } from "./types";
+import { isRecord, jobOf, mapEvent } from "./events";
 
 export const TOKEN_STORAGE_KEY = "cadstudio.token";
 
@@ -29,10 +30,6 @@ export interface BrowserTransportOptions {
   token?: string | null;
   fetch?: typeof fetch;
   EventSource?: typeof EventSource;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function errorMessage(error: unknown): string {
@@ -88,35 +85,21 @@ export class BrowserTransport implements CadStudioTransport {
     return `${this.baseUrl}${path}`;
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async send(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
     if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
     if (init.body !== undefined) headers.set("Content-Type", "application/json");
-
-    let response: Response;
     try {
-      response = await this.fetchImpl(this.url(path), { ...init, headers });
+      return await this.fetchImpl(this.url(path), { ...init, headers });
     } catch (error) {
       throw new TransportError(0, `network error: ${errorMessage(error)}`);
     }
+  }
 
-    let body: unknown;
-    const text = await response.text();
-    if (text) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = undefined;
-      }
-    }
-    if (!response.ok) {
-      const detail = isRecord(body) && typeof body.error === "string" ? body.error : null;
-      throw new TransportError(
-        response.status,
-        detail ?? (response.statusText || `HTTP ${response.status}`),
-        isRecord(body) ? body : undefined,
-      );
-    }
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.send(path, init);
+    const body = parseJson(await response.text());
+    if (!response.ok) throw httpError(response, body);
     if (!isRecord(body)) {
       throw new TransportError(response.status, "response is not a JSON object");
     }
@@ -137,11 +120,11 @@ export class BrowserTransport implements CadStudioTransport {
 
   async startBuild(model: string, sets?: Record<string, number | string>): Promise<Job> {
     const body = sets ? { set: sets } : {};
-    const doc = await this.request<{ job: Job }>(`/v1/models/${encodePath(model)}/build`, {
+    const doc = await this.request<Record<string, unknown>>(`/v1/models/${encodePath(model)}/build`, {
       method: "POST",
       body: JSON.stringify(body),
     });
-    return doc.job;
+    return jobOf(doc);
   }
 
   async listPhysicsInputs(model: string): Promise<PhysicsInputs> {
@@ -163,24 +146,24 @@ export class BrowserTransport implements CadStudioTransport {
       acceptance: req.acceptance,
     };
     if (req.options !== undefined) body.options = req.options;
-    const doc = await this.request<{ job: Job }>("/v1/runs", {
+    const doc = await this.request<Record<string, unknown>>("/v1/runs", {
       method: "POST",
       body: JSON.stringify(body),
     });
-    return doc.job;
+    return jobOf(doc);
   }
 
   async getJob(id: string): Promise<Job> {
-    const doc = await this.request<{ job: Job }>(`/v1/jobs/${encodeURIComponent(id)}`);
-    return doc.job;
+    const doc = await this.request<Record<string, unknown>>(`/v1/jobs/${encodeURIComponent(id)}`);
+    return jobOf(doc);
   }
 
   async cancelJob(id: string): Promise<Job> {
-    const doc = await this.request<{ job: Job }>(
+    const doc = await this.request<Record<string, unknown>>(
       `/v1/jobs/${encodeURIComponent(id)}/cancel`,
       { method: "POST" },
     );
-    return doc.job;
+    return jobOf(doc);
   }
 
   /** EventSource cannot send headers, so the token rides in the query string. */
@@ -209,23 +192,38 @@ export class BrowserTransport implements CadStudioTransport {
     return () => source.close();
   }
 
+  /** Fetched with the bearer header, so the token stays out of artifact URLs. */
+  async getArtifact(path: string): Promise<ArrayBuffer> {
+    const response = await this.send(`/v1/artifacts/${encodePath(path)}`);
+    if (!response.ok) throw httpError(response, parseJson(await response.text()));
+    try {
+      return await response.arrayBuffer();
+    } catch (error) {
+      throw new TransportError(0, `network error: ${errorMessage(error)}`);
+    }
+  }
+
   artifactUrl(path: string): string {
     const base = `${this.url("/v1/artifacts")}/${encodePath(path)}`;
     return this.token ? `${base}?token=${encodeURIComponent(this.token)}` : base;
   }
 }
 
-/** Map an SSE `job` or `artifact` payload; anything else is ignored. */
-function mapEvent(parsed: unknown): ServiceEvent | null {
-  if (!isRecord(parsed)) return null;
-  if (isRecord(parsed.job)) {
-    return { type: "job", job: parsed.job as unknown as Job };
+function parseJson(text: string): unknown {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
   }
-  if (parsed.kind === "scene" && typeof parsed.model === "string") {
-    return { type: "artifact", kind: "scene", model: parsed.model };
-  }
-  if (parsed.kind === "run" && typeof parsed.runId === "string") {
-    return { type: "artifact", kind: "run", runId: parsed.runId };
-  }
-  return null;
+}
+
+/** A non-2xx response as a TransportError; the server's `error` text wins over the status line. */
+function httpError(response: Response, body: unknown): TransportError {
+  const detail = isRecord(body) && typeof body.error === "string" ? body.error : null;
+  return new TransportError(
+    response.status,
+    detail ?? (response.statusText || `HTTP ${response.status}`),
+    isRecord(body) ? body : undefined,
+  );
 }

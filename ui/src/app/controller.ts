@@ -9,7 +9,6 @@ import {
   type SceneDoc,
   type SceneResponse,
   type ServiceEvent,
-  TransportError,
 } from "../transport/types";
 import { bannerFor, renderBanner } from "./banner";
 import { renderProps } from "./props";
@@ -29,15 +28,8 @@ export interface ControllerOptions {
   selection?: Selection;
   /** Injectable for tests so they do not have to parse GLBs. */
   buildScene?: (doc: SceneDoc, loadBytes: (meshPath: string) => Promise<ArrayBuffer>) => Promise<LoadedScene>;
-  loadBytes?: (url: string) => Promise<ArrayBuffer>;
-}
-
-async function fetchBytes(url: string): Promise<ArrayBuffer> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new TransportError(response.status, `artifact request failed: ${response.statusText}`);
-  }
-  return response.arrayBuffer();
+  /** Bytes of an `out/`-relative artifact; defaults to `transport.getArtifact`. */
+  loadBytes?: (path: string) => Promise<ArrayBuffer>;
 }
 
 /**
@@ -51,7 +43,7 @@ export class AppController {
   private readonly viewport: SceneViewport;
   private readonly elements: ControllerElements;
   private readonly buildScene: NonNullable<ControllerOptions["buildScene"]>;
-  private readonly loadBytes: (url: string) => Promise<ArrayBuffer>;
+  private readonly loadBytes: (path: string) => Promise<ArrayBuffer>;
   private readonly unsubscribeSelection: () => void;
 
   private currentModel: string | null = null;
@@ -69,7 +61,7 @@ export class AppController {
     this.elements = options.elements;
     this.selection = options.selection ?? new Selection();
     this.buildScene = options.buildScene ?? defaultBuildSceneGroup;
-    this.loadBytes = options.loadBytes ?? fetchBytes;
+    this.loadBytes = options.loadBytes ?? ((path) => this.transport.getArtifact(path));
     this.unsubscribeSelection = this.selection.onChange((id) => {
       this.viewport.setHighlight(id);
       if (this.response) renderProps(this.elements.props, this.response.scene, id);
@@ -91,7 +83,7 @@ export class AppController {
       const response = await this.transport.getScene(model);
       if (token !== this.loadToken) return;
       const loaded = await this.buildScene(response.scene, (meshPath) =>
-        this.loadBytes(this.transport.artifactUrl(`${response.artifactBase}/${meshPath}`)),
+        this.loadBytes(`${response.artifactBase}/${meshPath}`),
       );
       if (token !== this.loadToken) {
         disposeScene(loaded);

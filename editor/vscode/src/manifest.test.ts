@@ -19,13 +19,17 @@ describe("committed extension build", () => {
     expect(manifest.main).toBe("./dist/extension.js");
   });
 
-  it("contributes the open command and activation events", () => {
-    expect(manifest.contributes).toEqual({
-      commands: [{ command: "cadstudio.openGui", title: "CADStudio: Open GUI" }],
-    });
+  it("contributes the open command, the serve task type and activation events", () => {
+    const contributes = manifest.contributes as Record<string, unknown>;
+    expect(Object.keys(contributes).sort()).toEqual(["commands", "taskDefinitions"]);
+    expect(contributes.commands).toEqual([
+      { command: "cadstudio.openGui", title: "CADStudio: Open GUI" },
+    ]);
+    expect(contributes.taskDefinitions).toMatchObject([{ type: "cadstudio", required: ["task"] }]);
     expect(manifest.activationEvents).toEqual([
       "onCommand:cadstudio.openGui",
       "onUri",
+      "onWebviewPanel:cadstudio.gui",
     ]);
   });
 

@@ -130,8 +130,8 @@ class FakeTransport implements CadStudioTransport {
     return () => {};
   }
 
-  artifactUrl(path: string): string {
-    return `http://test/v1/artifacts/${path}`;
+  async getArtifact(): Promise<ArrayBuffer> {
+    return new ArrayBuffer(0);
   }
 }
 

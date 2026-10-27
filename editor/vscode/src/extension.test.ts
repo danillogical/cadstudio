@@ -1,7 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "vscode";
-import { activate, deactivate } from "./extension";
+import type { ServiceClient } from "./bridge";
+import { activate, deactivate, type ExtensionDeps } from "./extension";
 import * as fake from "./__mocks__/vscode";
+
+const INDEX_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <title>CADStudio</title>
+    <script type="module" crossorigin src="./assets/index-abc.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-def.css">
+  </head>
+  <body><div id="app"></div></body>
+</html>
+`;
+
+const client: ServiceClient = {
+  request: async () => ({ ok: true, result: {} }),
+  openEvents: async () => ({ close() {} }),
+};
+
+const deps: ExtensionDeps = {
+  readIndexHtml: () => INDEX_HTML,
+  createClient: () => client,
+};
 
 function makeContext(): ExtensionContext {
   return {
@@ -13,7 +35,7 @@ function makeContext(): ExtensionContext {
 
 function activateWithContext(): ExtensionContext {
   const context = makeContext();
-  activate(context);
+  activate(context, deps);
   return context;
 }
 
@@ -43,7 +65,7 @@ describe("activate", () => {
     expect(context.subscriptions.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("creates a scripted webview panel with the folder and version", () => {
+  it("creates a scripted webview panel that serves the bundled UI", () => {
     activateWithContext();
     runCommand();
     expect(fake.window.createWebviewPanel).toHaveBeenCalledTimes(1);
@@ -52,41 +74,41 @@ describe("activate", () => {
     expect(title).toBe("CADStudio");
     expect(options).toMatchObject({ enableScripts: true });
     const roots = (options as { localResourceRoots: Array<{ path: string }> }).localResourceRoots;
-    expect(roots[0].path.endsWith("/dist")).toBe(true);
+    expect(roots.map((root) => root.path)).toEqual(["/ext/media"]);
 
     const html = fake.createdPanels[0].webview.html;
-    expect(html).toContain("cadstudio");
-    expect(html).toContain("0.0.1");
-    expect(html).toContain('id="query">(none)');
-    expect(html).toContain('id="script-status"');
+    expect(html).toContain("connect-src 'none'");
+    expect(html).toContain('src="vscode-resource:/ext/media/assets/index-abc.js"');
+    expect(html).toContain('href="vscode-resource:/ext/media/assets/index-def.css"');
   });
 
   it("reveals the existing panel instead of creating a second one", () => {
     activateWithContext();
     runCommand();
+    const html = fake.createdPanels[0].webview.html;
     runCommand("x=1");
     expect(fake.window.createWebviewPanel).toHaveBeenCalledTimes(1);
     expect(fake.createdPanels[0].reveal).toHaveBeenCalledTimes(1);
-    expect(fake.createdPanels[0].webview.html).toContain('id="query">x=1');
+    expect(fake.createdPanels[0].webview.html).toBe(html);
   });
 
-  it("shows (none) for a non-string command argument", () => {
+  it("ignores a non-string command argument", () => {
     activateWithContext();
     runCommand({ not: "a string" });
-    expect(fake.createdPanels[0].webview.html).toContain('id="query">(none)');
+    expect(fake.window.createWebviewPanel).toHaveBeenCalledTimes(1);
   });
 
   it("routes an /open URI through the same command", () => {
     activateWithContext();
     const handler = fake.uriHandlers[0];
-    handler.handleUri({ path: "/open", query: "x=1" });
+    handler.handleUri(fake.makeUri("/open", "x=1"));
     expect(fake.commands.executeCommand).toHaveBeenCalledWith("cadstudio.openGui", "x=1");
-    expect(fake.createdPanels[0].webview.html).toContain('id="query">x=1');
+    expect(fake.window.createWebviewPanel).toHaveBeenCalledTimes(1);
   });
 
   it("warns and does not open a panel for an unknown URI path", () => {
     activateWithContext();
-    fake.uriHandlers[0].handleUri({ path: "/viewer", query: "run=x" });
+    fake.uriHandlers[0].handleUri(fake.makeUri("/viewer", "run=x"));
     expect(fake.commands.executeCommand).not.toHaveBeenCalled();
     expect(fake.window.showWarningMessage).toHaveBeenCalledTimes(1);
     expect(fake.window.createWebviewPanel).not.toHaveBeenCalled();

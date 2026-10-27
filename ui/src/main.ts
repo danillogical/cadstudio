@@ -4,7 +4,8 @@ import { renderBanner } from "./app/banner";
 import { JobPanel } from "./app/jobs-panel";
 import { PlaybackController } from "./playback/controller";
 import { BrowserTransport } from "./transport/browser";
-import { TransportError, type Job } from "./transport/types";
+import { TransportError, type CadStudioTransport, type Job } from "./transport/types";
+import { hasVsCodeApi, VsCodeTransport } from "./transport/vscode";
 import { Viewport, type LayerName } from "./viewport/viewport";
 
 function element<T extends HTMLElement>(id: string): T {
@@ -30,7 +31,10 @@ async function main(): Promise<void> {
   const showModel = element<HTMLButtonElement>("show-model");
   const showRun = element<HTMLButtonElement>("show-run");
 
-  const transport = BrowserTransport.fromLocation();
+  // Same UI in both hosts; only the transport differs.
+  const transport: CadStudioTransport = hasVsCodeApi()
+    ? VsCodeTransport.fromWebview()
+    : BrowserTransport.fromLocation();
   const viewport = new Viewport(element("viewport"));
   const controller = new AppController({
     transport,
