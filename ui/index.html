@@ -8,11 +8,37 @@
   <body>
     <div id="app">
       <div id="banner" class="banner" hidden></div>
+      <div id="run-banner" class="banner" hidden></div>
       <main class="layout">
         <aside class="sidebar">
           <section class="panel picker-panel">
             <label for="model-picker">Model</label>
             <select id="model-picker"></select>
+          </section>
+          <section class="panel jobs-panel">
+            <h2>Jobs</h2>
+            <div class="field-row">
+              <button id="build" type="button" title="Build, check and export the scene">Build</button>
+            </div>
+            <label for="run-scenario">Scenario</label>
+            <select id="run-scenario"></select>
+            <label for="run-acceptance">Acceptance</label>
+            <select id="run-acceptance"></select>
+            <label for="run-options">Options</label>
+            <select id="run-options"></select>
+            <div class="field-row">
+              <button id="run" type="button" title="Start `cad physics run` with these files">Run</button>
+              <button id="job-cancel" type="button" hidden>Cancel</button>
+            </div>
+            <div id="job-status" class="job-status" role="status"></div>
+            <pre id="job-log" class="job-log" hidden></pre>
+          </section>
+          <section class="panel runs-panel">
+            <label for="run-picker">Run</label>
+            <div class="field-row">
+              <select id="run-picker"></select>
+              <button id="runs-refresh" type="button" title="Refresh the run list">↻</button>
+            </div>
           </section>
           <section class="panel tree-panel">
             <h2>Parts</h2>
@@ -22,9 +48,36 @@
             <div id="props"></div>
           </section>
         </aside>
-        <section class="viewport-panel">
-          <div id="viewport" class="viewport"></div>
-          <button id="fit" type="button" title="Fit the model in view (F)">Fit</button>
+        <section id="stage" class="stage" data-layer="scene">
+          <div class="viewport-panel">
+            <div id="viewport" class="viewport"></div>
+            <div class="layer-toggle" role="group" aria-label="Show">
+              <button id="show-model" type="button" aria-pressed="true">Model</button>
+              <button id="show-run" type="button" aria-pressed="false" disabled>Run</button>
+            </div>
+            <button id="fit" type="button" title="Fit the model in view (F)">Fit</button>
+          </div>
+          <section id="playback" class="panel playback-panel" hidden>
+            <div class="playback-row">
+              <button id="play" type="button" aria-pressed="false">Play</button>
+              <button id="restart" type="button">Restart</button>
+              <input id="seek" type="range" aria-label="Seek" />
+            </div>
+            <div class="playback-row readout">
+              <span id="play-time"></span>
+              <span id="play-frame"></span>
+              <span>phase <span id="play-phase"></span></span>
+            </div>
+            <div class="playback-row">
+              <label for="speed">Speed</label>
+              <input id="speed" type="range" />
+              <span id="speed-label">1.0×</span>
+              <label class="check"><input id="contacts" type="checkbox" /> Contacts</label>
+            </div>
+            <div id="contacts-note" class="note"></div>
+            <h3>Transparent bodies</h3>
+            <div id="bodies"></div>
+          </section>
         </section>
       </main>
     </div>

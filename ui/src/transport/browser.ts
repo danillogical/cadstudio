@@ -3,6 +3,7 @@ import {
   type HealthInfo,
   type Job,
   type ModelList,
+  type PhysicsInputs,
   type RunList,
   type SceneResponse,
   type ServiceEvent,
@@ -141,6 +142,10 @@ export class BrowserTransport implements CadStudioTransport {
       body: JSON.stringify(body),
     });
     return doc.job;
+  }
+
+  async listPhysicsInputs(model: string): Promise<PhysicsInputs> {
+    return this.request<PhysicsInputs>(`/v1/models/${encodePath(model)}/physics-inputs`);
   }
 
   async listRuns(): Promise<RunList> {

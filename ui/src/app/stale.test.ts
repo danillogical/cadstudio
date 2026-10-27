@@ -7,6 +7,7 @@ import type {
   CadStudioTransport,
   Job,
   ModelList,
+  PhysicsInputs,
   RunList,
   SceneDoc,
   SceneResponse,
@@ -99,6 +100,10 @@ class FakeTransport implements CadStudioTransport {
 
   async startBuild(): Promise<Job> {
     return job();
+  }
+
+  async listPhysicsInputs(): Promise<PhysicsInputs> {
+    return { schemaVersion: 1, project: "", model: "", scenarios: [], acceptance: [], options: [] };
   }
 
   async listRuns(): Promise<RunList> {

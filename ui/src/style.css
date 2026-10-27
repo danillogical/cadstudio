@@ -16,6 +16,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -62,7 +66,7 @@ body {
   gap: 8px;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .panel {
@@ -73,13 +77,16 @@ body {
   min-width: 0;
 }
 
-.picker-panel {
+.picker-panel,
+.jobs-panel,
+.runs-panel {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: none;
 }
 
-.picker-panel select {
+select {
   width: 100%;
   min-width: 0;
   background: var(--bg);
@@ -89,6 +96,66 @@ body {
   padding: 4px;
 }
 
+button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:hover:not(:disabled) {
+  background: #2f2f30;
+}
+
+button:disabled,
+select:disabled,
+input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button[aria-pressed="true"] {
+  background: var(--selected);
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-row select {
+  flex: 1 1 auto;
+}
+
+.job-status {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.job-status[data-state="failed"],
+.job-status[data-state="error"] {
+  color: #f48771;
+}
+
+.job-log {
+  margin: 0;
+  max-height: 12em;
+  overflow: auto;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .tree-panel,
 .props-panel {
   min-height: 0;
@@ -96,7 +163,8 @@ body {
 }
 
 .tree-panel {
-  flex: 1 1 auto;
+  flex: 1 0 auto;
+  min-height: 80px;
 }
 
 .props-panel {
@@ -175,13 +243,84 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
 .viewport-panel {
   position: relative;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
+}
+
+/* Playback controls belong to the run view only. */
+.stage[data-layer="scene"] .playback-panel {
+  display: none;
+}
+
+.playback-panel {
+  flex: none;
+}
+
+.playback-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+
+.playback-row input[type="range"] {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.readout {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.body-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+.body-list label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.layer-toggle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  gap: 2px;
 }
 
 .viewport {
@@ -213,33 +352,47 @@ dd {
   position: absolute;
   top: 8px;
   right: 8px;
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 4px 10px;
-  cursor: pointer;
 }
 
-#fit:hover {
-  background: #2f2f30;
-}
-
-/* Narrow host panels (VS Code side bar, ~400 px): stack with the viewport first. */
+/*
+ * Narrow host panels (VS Code side bar, ~400 px): plain document flow with the viewport first
+ * at a fixed height, then playback, then the sidebar. The page itself scrolls, so nothing
+ * can be covered by the canvas or pushed out of reach.
+ */
 @media (max-width: 640px) {
+  html,
+  body {
+    height: auto;
+  }
+
+  #app {
+    height: auto;
+    min-height: 100%;
+  }
+
   .layout {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
-    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    flex: none;
+  }
+
+  .stage {
+    order: -1;
+    flex: none;
   }
 
   .viewport-panel {
-    order: -1;
-    min-height: 50vh;
+    flex: none;
+    height: 50vh;
+    min-height: 240px;
   }
 
   .sidebar {
     overflow: visible;
+  }
+
+  .tree-panel {
+    min-height: 0;
   }
 
   .tree-panel,

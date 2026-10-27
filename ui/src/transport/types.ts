@@ -86,8 +86,80 @@ export interface TrajectoryResponse {
   stale: boolean;
   error: string | null;
   artifactBase: string;
-  /** Refined by G3c; kept loose so the transport does not pin the playback schema. */
+  /** Validated by `parseTrajectory` (playback/frames.ts); kept loose so the transport does not pin it. */
   trajectory: Record<string, unknown>;
+}
+
+/** One mesh of a trajectory body; `pose` is the geom's local `[x,y,z,qw,qx,qy,qz]` (mm). */
+export interface TrajectoryMesh {
+  geom: string;
+  mesh: string;
+  pose: [number, number, number, number, number, number, number];
+}
+
+export interface TrajectoryBody {
+  name: string;
+  /** Welded to the world, so its pose never changes. */
+  fixed: boolean;
+  meshes: TrajectoryMesh[];
+}
+
+/** A scenario phase span in sim seconds. */
+export interface Phase {
+  name: string;
+  t0: number;
+  t1: number;
+}
+
+export interface PosesInfo {
+  path: string;
+  dtype: "float32";
+  byteOrder: "little";
+  /** `[frameCount, bodyCount, 7]`. */
+  shape: [number, number, number];
+  layout: string;
+  positionUnits: string;
+}
+
+export interface ContactsInfo {
+  path: string;
+  dtype: "float32";
+  byteOrder: "little";
+  count: number;
+  layout: string;
+  forceUnits: string;
+}
+
+/** `trajectory.json` as written by `cadkit/gui/trajectory.py`. */
+export interface TrajectoryDoc {
+  schemaVersion: number;
+  units: string;
+  runId: string;
+  manifestSha256: string;
+  fps: number;
+  frameCount: number;
+  /** Sim seconds per frame, non-decreasing. */
+  times: number[];
+  bodies: TrajectoryBody[];
+  phases: Phase[];
+  poses: PosesInfo;
+  /** Present only when the export ran with `--contacts`. */
+  contacts: ContactsInfo | null;
+}
+
+/** A file a run may use; `path` is repo-relative and is what `startRun` sends back. */
+export interface PhysicsInputFile {
+  name: string;
+  path: string;
+}
+
+export interface PhysicsInputs {
+  schemaVersion: number;
+  project: string;
+  model: string;
+  scenarios: PhysicsInputFile[];
+  acceptance: PhysicsInputFile[];
+  options: PhysicsInputFile[];
 }
 
 export interface Job {
@@ -138,6 +210,8 @@ export interface CadStudioTransport {
   /** `model` is `<project>/<model>`. */
   getScene(model: string): Promise<SceneResponse>;
   startBuild(model: string, sets?: Record<string, number | string>): Promise<Job>;
+  /** Scenario, acceptance and options files `startRun` accepts for `<project>/<model>`. */
+  listPhysicsInputs(model: string): Promise<PhysicsInputs>;
   listRuns(): Promise<RunList>;
   getTrajectory(runId: string): Promise<TrajectoryResponse>;
   startRun(req: StartRunRequest): Promise<Job>;

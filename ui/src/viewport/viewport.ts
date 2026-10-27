@@ -29,6 +29,19 @@ export interface SceneViewport {
   setHighlight(partId: string | null): void;
 }
 
+/** A viewport the playback controller drives: it moves bodies itself, then asks for a frame. */
+export interface TrajectoryViewport extends SceneViewport {
+  requestRender(): void;
+}
+
+/** The model scene and the run trajectory each own a layer; only the active one is drawn. */
+export type LayerName = "scene" | "trajectory";
+
+interface Layer {
+  loaded: LoadedScene | null;
+  highlighted: string | null;
+}
+
 /**
  * Three.js assembly viewport: Z up, millimetres, orbit/pan/zoom, a mm grid, axes and
  * click-to-select. Geometry arrives already in assembly coordinates, so nothing is scaled.
@@ -43,10 +56,13 @@ export class Viewport implements SceneViewport {
   private readonly modelRoot = new Group();
   private readonly overlay: HTMLElement;
   private readonly resizeObserver: ResizeObserver;
-  private loaded: LoadedScene | null = null;
+  private readonly layers: Record<LayerName, Layer> = {
+    scene: { loaded: null, highlighted: null },
+    trajectory: { loaded: null, highlighted: null },
+  };
+  private active: LayerName = "scene";
   private grid: GridHelper | null = null;
   private axes: AxesHelper | null = null;
-  private highlighted: string | null = null;
   private pointerStart: { x: number; y: number; id: number } | null = null;
   private disposed = false;
 
@@ -92,15 +108,39 @@ export class Viewport implements SceneViewport {
     this.render();
   }
 
-  /** Replace the scene; the previous one is disposed after the swap. */
+  private get loaded(): LoadedScene | null {
+    return this.layers[this.active].loaded;
+  }
+
+  /** The layer currently drawn. */
+  get activeLayer(): LayerName {
+    return this.active;
+  }
+
+  /** Whether `layer` holds something to draw. */
+  hasLayer(layer: LayerName): boolean {
+    return this.layers[layer].loaded !== null;
+  }
+
+  /** Replace the model scene layer; the previous one is disposed after the swap. */
   setScene(loaded: LoadedScene | null): void {
-    const previous = this.loaded;
+    this.setLayerScene("scene", loaded);
+  }
+
+  /** Replace one layer's content; a hidden layer is swapped without touching the camera. */
+  setLayerScene(layer: LayerName, loaded: LoadedScene | null): void {
+    const state = this.layers[layer];
+    const previous = state.loaded;
     // A rebuild of the same model keeps the user's viewpoint; a different model refits.
     const sameModel = loaded !== null && previous !== null && loaded.root.name === previous.root.name;
+    state.loaded = loaded;
+    state.highlighted = null;
+    if (layer !== this.active) {
+      disposeScene(previous);
+      return;
+    }
     this.modelRoot.clear();
     disposeScene(previous);
-    this.loaded = loaded;
-    this.highlighted = null;
     if (loaded) {
       this.modelRoot.add(loaded.root);
       this.rebuildHelpers(loaded.bounds);
@@ -109,6 +149,33 @@ export class Viewport implements SceneViewport {
     } else {
       this.rebuildHelpers(null);
     }
+    this.render();
+  }
+
+  /** Draw `layer` instead of the current one and fit the camera to it. */
+  setActiveLayer(layer: LayerName): void {
+    if (layer === this.active) return;
+    this.active = layer;
+    this.modelRoot.clear();
+    const loaded = this.layers[layer].loaded;
+    if (loaded) this.modelRoot.add(loaded.root);
+    this.rebuildHelpers(loaded ? loaded.bounds : null);
+    this.fit();
+  }
+
+  /** A `TrajectoryViewport` bound to one layer, for a controller that owns that layer. */
+  layer(layer: LayerName): TrajectoryViewport {
+    return {
+      setScene: (loaded) => this.setLayerScene(layer, loaded),
+      setHighlight: (partId) => this.setLayerHighlight(layer, partId),
+      requestRender: () => {
+        if (layer === this.active) this.render();
+      },
+    };
+  }
+
+  /** Draw a frame now, e.g. after moving bodies. */
+  requestRender(): void {
     this.render();
   }
 
@@ -139,9 +206,14 @@ export class Viewport implements SceneViewport {
   }
 
   setHighlight(partId: string | null): void {
-    if (this.highlighted === partId) return;
-    this.highlighted = partId;
-    for (const [id, object] of this.loaded?.parts ?? []) {
+    this.setLayerHighlight("scene", partId);
+  }
+
+  setLayerHighlight(layer: LayerName, partId: string | null): void {
+    const state = this.layers[layer];
+    if (state.highlighted === partId) return;
+    state.highlighted = partId;
+    for (const [id, object] of state.loaded?.parts ?? []) {
       object.traverse((node) => {
         const material = (node as { material?: unknown }).material;
         const materials = Array.isArray(material) ? material : [material];
@@ -164,8 +236,10 @@ export class Viewport implements SceneViewport {
     globalThis.removeEventListener("keydown", this.onKeyDown);
     this.controls.dispose();
     this.modelRoot.clear();
-    disposeScene(this.loaded);
-    this.loaded = null;
+    for (const state of Object.values(this.layers)) {
+      disposeScene(state.loaded);
+      state.loaded = null;
+    }
     this.renderer.dispose();
     this.overlay.remove();
     this.renderer.domElement.remove();

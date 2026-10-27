@@ -56,6 +56,13 @@ Deviations and response details
   ``<run>.gui/``, so their artifact path is ``<runId>.gui/<file>``.
 - A build job with a failing check leaves the previous scene in place and marks it ``stale``.
   In-process OCCT work cannot be interrupted, so only physics jobs can be cancelled.
+- ``GET /v1/models/{project}/{model}/physics-inputs`` (token required) lists the files a run may
+  use: ``scenarios`` (``physics/scenarios/*.json``), ``acceptance`` (``physics/*_acceptance.json``)
+  and ``options`` (``physics/options/*.toml``), each entry ``{"name", "path"}`` with ``path``
+  relative to the repo root. Only regular, non-symlink files inside the project are listed.
+- ``POST /v1/runs`` accepts a scenario, acceptance or options path only when it is in that
+  listing, spelled repo-relative (as listed) or project-relative. Traversal, absolute and
+  outside-project paths are 403, a missing file is 400, and an existing unlisted file is 403.
 """
 from __future__ import annotations
 
@@ -99,6 +106,7 @@ _KILL_GRACE_S = 5.0
 _SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 _MODEL_SCENE = re.compile(r"^/v1/models/([^/]+)/([^/]+)/scene$")
 _MODEL_BUILD = re.compile(r"^/v1/models/([^/]+)/([^/]+)/build$")
+_MODEL_INPUTS = re.compile(r"^/v1/models/([^/]+)/([^/]+)/physics-inputs$")
 _RUN_TRAJECTORY = re.compile(r"^/v1/runs/(.+)/trajectory$")
 _JOB = re.compile(r"^/v1/jobs/([^/]+)$")
 _JOB_CANCEL = re.compile(r"^/v1/jobs/([^/]+)/cancel$")
@@ -767,6 +775,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         match = _MODEL_BUILD.fullmatch(path)
         if match:
             return self._require(method, "POST") or self._model_build(*match.groups())
+        match = _MODEL_INPUTS.fullmatch(path)
+        if match:
+            return self._require(method, "GET") or self._model_inputs(*match.groups())
         match = _RUN_TRAJECTORY.fullmatch(path)
         if match:
             return self._require(method, "GET") or self._run_trajectory(match.group(1))
@@ -913,6 +924,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.service.queue.submit(job)
         self._send_json(202, {"job": job.to_dict()})
 
+    def _model_inputs(self, project_name: str, model: str) -> None:
+        if not _SEGMENT.fullmatch(project_name) or not _SEGMENT.fullmatch(model):
+            raise _HttpError(404, f"unknown model {project_name}/{model}")
+        project = _resolve_or_404(f"{project_name}/{model}")
+        listing = _physics_inputs(project, self.service.repo_root)
+        self._send_json(200, {
+            "project": project.name,
+            "model": model,
+            **{key: [{"name": entry.name, "path": entry.path} for entry in entries]
+               for key, entries in listing.items()},
+        })
+
     def _job(self, job_id: str) -> None:
         job = self.service.jobs.get(job_id)
         if job is None:
@@ -1018,15 +1041,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(400, "model must be a non-empty string")
         project = _resolve_or_404(spec)
         model = spec.rpartition("/")[2]
-        project_dir = Path(project.models.__file__).resolve().parent.parent
+        listing = _physics_inputs(project, self.service.repo_root)
         paths = {}
-        for key in ("scenario", "acceptance", "options"):
+        for key, group in (("scenario", "scenarios"), ("acceptance", "acceptance"),
+                           ("options", "options")):
             value = doc.get(key)
             if value is None and key == "options":
                 continue
             if not isinstance(value, str) or not value:
                 raise _HttpError(400, f"{key} must be a non-empty string")
-            paths[key] = _project_file(project_dir, value, key)
+            paths[key] = _listed_input(project, self.service.repo_root, listing[group],
+                                       value, key)
         scenario = paths["scenario"]
         out_dir = (self.service.out_root / project.name / model / "physics"
                    / Path(scenario).stem / _stamp())
@@ -1159,25 +1184,69 @@ def _resolve_or_404(spec: str) -> Project:
     return project
 
 
-def _project_file(project_dir: Path, value: str, key: str) -> Path:
-    """Resolve a project-relative file: 403 outside the project, 400 when missing."""
+@dataclass(frozen=True)
+class _InputFile:
+    """One listed physics input: display name, repo-relative and project-relative spellings."""
+
+    name: str
+    path: str
+    project_path: str
+    resolved: Path
+
+
+# Listing key -> (subdirectory of the project, glob) for the physics-inputs route.
+_INPUT_GLOBS = {
+    "scenarios": ("physics/scenarios", "*.json"),
+    "acceptance": ("physics", "*_acceptance.json"),
+    "options": ("physics/options", "*.toml"),
+}
+
+
+def _project_dir(project: Project) -> Path:
+    return Path(project.models.__file__).resolve().parent.parent
+
+
+def _physics_inputs(project: Project, repo_root: Path) -> dict[str, list[_InputFile]]:
+    """Existing scenario, acceptance and options files of ``project``, sorted by path."""
+    project_dir = _project_dir(project)
+    root = Path(repo_root).resolve()
+    listing: dict[str, list[_InputFile]] = {}
+    for key, (subdir, pattern) in _INPUT_GLOBS.items():
+        entries = []
+        folder = project_dir / subdir
+        if folder.is_dir() and not folder.is_symlink():
+            for candidate in folder.glob(pattern):
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                resolved = candidate.resolve()
+                if not resolved.is_relative_to(project_dir) or not resolved.is_relative_to(root):
+                    continue
+                entries.append(_InputFile(
+                    name=resolved.name,
+                    path=resolved.relative_to(root).as_posix(),
+                    project_path=resolved.relative_to(project_dir).as_posix(),
+                    resolved=resolved,
+                ))
+        listing[key] = sorted(entries, key=lambda entry: entry.path)
+    return listing
+
+
+def _listed_input(project: Project, repo_root: Path, entries: list[_InputFile], value: str,
+                  key: str) -> Path:
+    """The listed file ``value`` names: 403 for unsafe or unlisted paths, 400 when missing."""
     if "\\" in value or "\x00" in value:
         raise _HttpError(403, f"{key} path is not allowed")
     path = Path(value)
     if path.is_absolute():
         raise _HttpError(403, f"{key} must be relative to the project")
-    if any(part in ("", ".", "..") for part in path.parts):
+    if any(part in ("", ".", "..") for part in value.split("/")):
         raise _HttpError(403, f"{key} must not contain '..'")
-    try:
-        resolved = (project_dir / path).resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise _HttpError(400, f"{key} file not found: {value}") from None
-    root = project_dir.resolve()
-    if not resolved.is_relative_to(root):
-        raise _HttpError(403, f"{key} must be inside the project")
-    if not resolved.is_file():
-        raise _HttpError(400, f"{key} is not a regular file: {value}")
-    return resolved
+    for entry in entries:
+        if value in (entry.path, entry.project_path):
+            return entry.resolved
+    if not any((base / path).exists() for base in (Path(repo_root), _project_dir(project))):
+        raise _HttpError(400, f"{key} file not found: {value}")
+    raise _HttpError(403, f"{key} is not a listed {key} file: {value}")
 
 
 def _artifact_allowed(service: GuiService, parts: tuple[str, ...]) -> bool:
