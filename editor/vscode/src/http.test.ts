@@ -59,6 +59,29 @@ describe("serviceRequest", () => {
     expect(seen[0].body).toBe('{"set":{"a":1}}');
   });
 
+  it("forwards a route's extra headers, but they cannot override Authorization", async () => {
+    await serviceRequest(
+      { port, token: TOKEN },
+      { method: "GET", path: "/v1/artifacts/x", binary: true, headers: { Range: "bytes=10-", Authorization: "Bearer evil" } },
+    );
+    expect(seen[0].headers.range).toBe("bytes=10-");
+    expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("does not let a differently-cased authorization header override the token either", async () => {
+    await serviceRequest(
+      { port, token: TOKEN },
+      { method: "GET", path: "/v1/artifacts/x", binary: true, headers: { authorization: "Bearer evil" } },
+    );
+    expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("sends DELETE with a JSON body", async () => {
+    await serviceRequest({ port, token: TOKEN }, { method: "DELETE", path: "/v1/follow", body: { model: "p/m" }, binary: false });
+    expect(seen[0].method).toBe("DELETE");
+    expect(seen[0].body).toBe('{"model":"p/m"}');
+  });
+
   it("sends no body or content type on a GET", async () => {
     await serviceRequest({ port, token: TOKEN }, { method: "GET", path: "/v1/runs", binary: false });
     expect(seen[0].method).toBe("GET");

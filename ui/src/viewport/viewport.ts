@@ -143,8 +143,8 @@ export class Viewport implements SceneViewport {
     disposeScene(previous);
     if (loaded) {
       this.modelRoot.add(loaded.root);
-      this.rebuildHelpers(loaded.bounds);
-      if (sameModel) this.updateClipping(loaded.bounds);
+      this.rebuildHelpers(shownBounds(loaded));
+      if (sameModel) this.updateClipping(shownBounds(loaded));
       else this.fit();
     } else {
       this.rebuildHelpers(null);
@@ -159,7 +159,7 @@ export class Viewport implements SceneViewport {
     this.modelRoot.clear();
     const loaded = this.layers[layer].loaded;
     if (loaded) this.modelRoot.add(loaded.root);
-    this.rebuildHelpers(loaded ? loaded.bounds : null);
+    this.rebuildHelpers(loaded ? shownBounds(loaded) : null);
     this.fit();
   }
 
@@ -188,12 +188,15 @@ export class Viewport implements SceneViewport {
     this.camera.updateProjectionMatrix();
   }
 
-  /** Fit the camera to the current model, or to a default box when empty. */
+  /**
+   * Fit the camera to the current model, or to a default box when empty. Every fit (the Fit
+   * button, the F key, opening a scene or run, switching layers) comes through here and uses
+   * `shownBounds`, so a hidden (removed) trajectory body never widens it.
+   */
   fit(): void {
+    const shown = this.loaded ? shownBounds(this.loaded) : null;
     const bounds =
-      this.loaded && !this.loaded.bounds.isEmpty()
-        ? this.loaded.bounds.clone()
-        : new Box3(new Vector3(-50, -50, -50), new Vector3(50, 50, 50));
+      shown && !shown.isEmpty() ? shown.clone() : new Box3(new Vector3(-50, -50, -50), new Vector3(50, 50, 50));
     const aspect = this.camera.aspect || 1;
     const fit = fitCamera(bounds, FOV_DEG, aspect);
     this.camera.position.copy(fit.position);
@@ -321,6 +324,11 @@ export class Viewport implements SceneViewport {
     }
     this.fit();
   };
+}
+
+/** What a fit should frame: the scene's live shown bounds when it has them, else its fixed bounds. */
+function shownBounds(loaded: LoadedScene): Box3 {
+  return loaded.fitBounds ? loaded.fitBounds() : loaded.bounds;
 }
 
 function formatStep(step: number): string {

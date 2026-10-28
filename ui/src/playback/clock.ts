@@ -17,11 +17,14 @@ export function clampSpeed(speed: number): number {
  * re-anchors at the `now` it is given, so changing speed or seeking never jumps. Playback
  * stops (does not loop) when it reaches `end`; `play()` at the end restarts from `start`.
  * A `now` earlier than the anchor never moves time backwards.
+ *
+ * A live clock (`setHold(true)`) has an `end` that grows (`extend`) and, on reaching it,
+ * stays running at `end` instead of stopping, so playback resumes when more frames arrive.
  */
 export class PlaybackClock {
   readonly start: number;
-  readonly end: number;
-
+  private endTime: number;
+  private holdAtEnd = false;
   private current: number;
   private running = false;
   private rate = DEFAULT_SPEED;
@@ -33,9 +36,32 @@ export class PlaybackClock {
       throw new RangeError(`invalid playback range ${start}..${end}`);
     }
     this.start = start;
-    this.end = end;
+    this.endTime = end;
     this.current = start;
     this.anchorTime = start;
+  }
+
+  get end(): number {
+    return this.endTime;
+  }
+
+  /** Whether reaching `end` keeps the clock running (a live, still-growing run). */
+  get hold(): boolean {
+    return this.holdAtEnd;
+  }
+
+  /** Grow `end` (never shrink it); a held clock keeps its place at the old end and moves on. */
+  extend(end: number, now: number): void {
+    if (!Number.isFinite(end) || end <= this.endTime) return;
+    this.tick(now);
+    this.endTime = end;
+    this.anchor(now);
+  }
+
+  setHold(hold: boolean, now: number): void {
+    this.tick(now);
+    this.holdAtEnd = hold;
+    this.anchor(now);
   }
 
   /** Sim seconds as of the last `tick` or mutation. */
@@ -59,9 +85,9 @@ export class PlaybackClock {
   /** Start playing from the current time, or from `start` if already at the end. */
   play(now: number): void {
     if (this.running) return;
-    if (this.ended) this.current = this.start;
-    // A zero-length run has nothing to play.
-    if (this.end === this.start) return;
+    if (this.ended && !this.holdAtEnd) this.current = this.start;
+    // A zero-length run has nothing to play, unless it is still growing.
+    if (this.end === this.start && !this.holdAtEnd) return;
     this.running = true;
     this.anchor(now);
   }
@@ -82,7 +108,7 @@ export class PlaybackClock {
   seek(t: number, now: number): number {
     this.current = Number.isNaN(t) ? this.start : Math.min(Math.max(t, this.start), this.end);
     this.anchor(now);
-    if (this.running && this.ended) this.running = false;
+    if (this.running && this.ended && !this.holdAtEnd) this.running = false;
     return this.current;
   }
 
@@ -110,7 +136,8 @@ export class PlaybackClock {
     const t = Math.max(this.current, this.anchorTime + ((now - this.anchorNow) / 1000) * this.rate);
     if (t >= this.end) {
       this.current = this.end;
-      this.running = false;
+      if (this.holdAtEnd) this.anchor(now);
+      else this.running = false;
     } else {
       this.current = t;
     }

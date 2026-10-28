@@ -42,6 +42,11 @@ const VALID: Array<[string, unknown[]]> = [
   ["getJob", ["a1b2c3"]],
   ["cancelJob", ["a1b2c3"]],
   ["getArtifact", ["pocky/syringe/scene/scene.glb"]],
+  ["getArtifact", ["pocky/runs/r1.live/poses.bin", { offset: 0 }]],
+  ["follow", [{ model: "pocky/syringe" }]],
+  ["unfollow", [{ model: "pocky/syringe" }]],
+  ["listLive", []],
+  ["getLive", [{ liveId: "pocky/runs/r1" }]],
 ];
 
 describe("parseWebviewMessage: accepted", () => {
@@ -312,6 +317,10 @@ describe("routeFor", () => {
       ["getJob", ["j1"], "GET", "/v1/jobs/j1", false],
       ["cancelJob", ["j1"], "POST", "/v1/jobs/j1/cancel", false],
       ["getArtifact", ["pocky/syringe/scene/scene.glb"], "GET", "/v1/artifacts/pocky/syringe/scene/scene.glb", true],
+      ["follow", [{ model: "pocky/syringe" }], "POST", "/v1/follow", false],
+      ["unfollow", [{ model: "pocky/syringe" }], "DELETE", "/v1/follow", false],
+      ["listLive", [], "GET", "/v1/live", false],
+      ["getLive", [{ liveId: "pocky/runs/r1" }], "GET", "/v1/live/pocky/runs/r1", false],
     ];
     expect(cases.map(([method]) => method).sort()).toEqual([...TRANSPORT_METHODS].sort());
     for (const [method, args, httpMethod, path, binary] of cases) {
@@ -334,7 +343,7 @@ describe("routeFor", () => {
     for (const [method, args] of VALID) {
       const route = routeFor(parseCall(method, args));
       if (route.method === "GET") expect(route.body).toBeUndefined();
-      else expect(["startBuild", "startRun", "cancelJob"]).toContain(method);
+      else expect(["startBuild", "startRun", "cancelJob", "follow", "unfollow"]).toContain(method);
     }
   });
 
@@ -486,5 +495,162 @@ describe("error constructors", () => {
 
   it("marks a rejected message with status 400", () => {
     expect(rejectedError("nope")).toEqual({ status: 400, message: "rejected by the CADStudio extension: nope" });
+  });
+});
+
+describe("follow, unfollow, live and ranged artifacts", () => {
+  it("routes follow as POST and unfollow as DELETE on /v1/follow with the model in the body", () => {
+    expect(routeFor(parseCall("follow", [{ model: "pocky/syringe" }]))).toEqual({
+      method: "POST",
+      path: "/v1/follow",
+      body: { model: "pocky/syringe" },
+      binary: false,
+    });
+    expect(routeFor(parseCall("unfollow", [{ model: "pocky/syringe" }]))).toEqual({
+      method: "DELETE",
+      path: "/v1/follow",
+      body: { model: "pocky/syringe" },
+      binary: false,
+    });
+  });
+
+  it("routes listLive and getLive as body-less GETs", () => {
+    expect(routeFor(parseCall("listLive", []))).toEqual({ method: "GET", path: "/v1/live", binary: false });
+    expect(routeFor(parseCall("getLive", [{ liveId: "pocky/runs/r1" }]))).toEqual({
+      method: "GET",
+      path: "/v1/live/pocky/runs/r1",
+      binary: false,
+    });
+  });
+
+  const BAD_FOLLOW: unknown[][] = [
+    [],
+    [{}],
+    [{ model: "pocky/syringe", extra: 1 }],
+    [{ model: "pocky/syringe", project: "pocky" }],
+    [{ model: 3 }],
+    [{ model: null }],
+    [{ model: ["pocky", "syringe"] }],
+    [{ model: "pocky" }],
+    [{ model: "pocky/syringe/x" }],
+    [{ model: "../syringe" }],
+    ["pocky/syringe"],
+    [null],
+    [["pocky/syringe"]],
+    [{ model: "pocky/syringe" }, { model: "pocky/syringe" }],
+  ];
+
+  it.each(["follow", "unfollow"])("%s accepts exactly [{model: 'p/m'}]", (method) => {
+    expect(parseWebviewMessage(request(method, [{ model: "p/m" }])).ok).toBe(true);
+    for (const args of BAD_FOLLOW) {
+      expect(parseWebviewMessage(request(method, args, 9)), JSON.stringify(args)).toMatchObject({ ok: false, id: 9 });
+    }
+  });
+
+  const BAD_LIVE: unknown[][] = [
+    [],
+    ["pocky/runs/r1"],
+    [null],
+    [["pocky/runs/r1"]],
+    [3],
+    [{}],
+    [{ liveId: 3 }],
+    [{ liveId: "" }],
+    [{ liveId: "../x" }],
+    [{ liveId: "a/../b" }],
+    [{ liveId: "a/./b" }],
+    [{ liveId: "a//b" }],
+    [{ liveId: "/etc/passwd" }],
+    [{ liveId: "a\\b" }],
+    [{ liveId: "a\u0000b" }],
+    [{ liveId: "pocky/runs/r1", extra: 1 }],
+    [{ liveId: "pocky/runs/r1" }, {}],
+  ];
+
+  it("getLive accepts a relative id and rejects .., absolute paths and non-object args", () => {
+    expect(parseWebviewMessage(request("getLive", [{ liveId: "pocky/runs/r1" }])).ok).toBe(true);
+    for (const args of BAD_LIVE) {
+      expect(parseWebviewMessage(request("getLive", args, 9)), JSON.stringify(args)).toMatchObject({ ok: false, id: 9 });
+    }
+  });
+
+  it("listLive takes no arguments", () => {
+    expect(parseWebviewMessage(request("listLive", [{}], 9))).toMatchObject({ ok: false, id: 9 });
+  });
+
+  it.each([0, 1, 4096, 2 ** 40])("getArtifact accepts offset %i and sends Range: bytes=N-", (offset) => {
+    const route = routeFor(parseCall("getArtifact", ["pocky/runs/r1.live/poses.bin", { offset }]));
+    expect(route).toEqual({
+      method: "GET",
+      path: "/v1/artifacts/pocky/runs/r1.live/poses.bin",
+      binary: true,
+      headers: { Range: `bytes=${offset}-` },
+    });
+  });
+
+  it("getArtifact without an offset sends no Range header", () => {
+    expect(routeFor(parseCall("getArtifact", ["a/b.bin"])).headers).toBeUndefined();
+  });
+
+  const BAD_OFFSET: unknown[] = [
+    -1,
+    1.5,
+    "3",
+    null,
+    undefined,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2 ** 60,
+    true,
+    [3],
+  ];
+
+  it.each(BAD_OFFSET.map((v) => [String(v), v] as const))("getArtifact rejects offset %s", (_name, offset) => {
+    expect(parseWebviewMessage(request("getArtifact", ["a/b.bin", { offset }], 4))).toMatchObject({ ok: false, id: 4 });
+  });
+
+  it("getArtifact rejects a malformed range argument", () => {
+    for (const range of [null, 3, "3", [], [3], {}, { offset: 1, extra: 1 }, { start: 1 }, { Range: "bytes=1-" }]) {
+      expect(parseWebviewMessage(request("getArtifact", ["a/b.bin", range], 4)), JSON.stringify(range)).toMatchObject({
+        ok: false,
+        id: 4,
+      });
+    }
+    expect(parseWebviewMessage(request("getArtifact", ["a/b.bin", { offset: 1 }, { offset: 2 }], 4))).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it("still applies the path rule to a ranged artifact", () => {
+    expect(parseWebviewMessage(request("getArtifact", ["../x", { offset: 0 }]))).toMatchObject({ ok: false });
+  });
+
+  it("returns an empty ArrayBuffer (success) for a 416 on a ranged binary route", () => {
+    const reply = mapHttpResponse(416, "Range Not Satisfiable", new TextEncoder().encode('{"error":"range"}'), true, true);
+    expect(reply.ok).toBe(true);
+    const result = (reply as { result: ArrayBuffer }).result;
+    expect(result).toBeInstanceOf(ArrayBuffer);
+    expect(result.byteLength).toBe(0);
+  });
+
+  it("still fails a 416 without a range, and a ranged 416 on a JSON route", () => {
+    const body = new TextEncoder().encode('{"error":"range"}');
+    expect(mapHttpResponse(416, "Range Not Satisfiable", body, true)).toEqual({
+      ok: false,
+      error: { status: 416, message: "range", body: { error: "range" } },
+    });
+    expect(mapHttpResponse(416, "Range Not Satisfiable", body, true, false)).toMatchObject({ ok: false });
+    expect(mapHttpResponse(416, "Range Not Satisfiable", body, false, true)).toMatchObject({ ok: false });
+  });
+
+  it("still fails other errors on a ranged binary route", () => {
+    expect(mapHttpResponse(404, "Not Found", new TextEncoder().encode("{}"), true, true)).toMatchObject({ ok: false });
+    expect(mapHttpResponse(500, "", new Uint8Array(0), true, true)).toMatchObject({ ok: false });
+  });
+
+  it("accepts a 206 partial answer as the bytes", () => {
+    const reply = mapHttpResponse(206, "Partial Content", new Uint8Array([1, 2, 3]), true, true);
+    expect(reply.ok).toBe(true);
+    expect((reply as { result: ArrayBuffer }).result.byteLength).toBe(3);
   });
 });

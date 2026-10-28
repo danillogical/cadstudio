@@ -133,6 +133,20 @@ class FakeTransport implements CadStudioTransport {
   async getArtifact(): Promise<ArrayBuffer> {
     return new ArrayBuffer(0);
   }
+
+  async follow(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async unfollow(): Promise<void> {}
+
+  async listLive(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async getLive(): Promise<never> {
+    throw new Error("not used");
+  }
 }
 
 function mount() {

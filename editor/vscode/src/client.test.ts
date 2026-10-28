@@ -34,6 +34,21 @@ function fakeIo(handler: (endpoint: Endpoint, route: HttpRoute, signal?: AbortSi
 }
 
 describe("HttpServiceClient.request", () => {
+  it("answers a 416 on a ranged artifact with empty bytes, but a 416 without a range is an error", async () => {
+    const { locator } = fakeLocator([record()]);
+    const { io } = fakeIo(() => answer(416, '{"error":"range not satisfiable"}', "Range Not Satisfiable"));
+    const client = new HttpServiceClient(locator, io);
+    const ranged = await client.request(
+      { method: "GET", path: "/v1/artifacts/a.bin", binary: true, headers: { Range: "bytes=64-" } },
+      signal(),
+    );
+    expect(ranged.ok).toBe(true);
+    expect((ranged as { result: ArrayBuffer }).result).toBeInstanceOf(ArrayBuffer);
+    expect((ranged as { result: ArrayBuffer }).result.byteLength).toBe(0);
+    const plain = await client.request({ method: "GET", path: "/v1/artifacts/a.bin", binary: true }, signal());
+    expect(plain).toMatchObject({ ok: false, error: { status: 416 } });
+  });
+
   it("sends the registered port and token to the io layer and maps the answer", async () => {
     const rec = record();
     const { locator } = fakeLocator([rec]);

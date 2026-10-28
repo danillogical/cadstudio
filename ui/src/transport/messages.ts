@@ -16,6 +16,10 @@ export const TRANSPORT_METHODS = [
   "getJob",
   "cancelJob",
   "getArtifact",
+  "follow",
+  "unfollow",
+  "listLive",
+  "getLive",
 ] as const;
 
 export type TransportMethod = (typeof TRANSPORT_METHODS)[number];

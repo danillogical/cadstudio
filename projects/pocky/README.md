@@ -13,6 +13,7 @@ uv run cad build pocky/packet_dummy --render --check --views standard
 POCKY_POSE=0 uv run cad build pocky/linkage_motion --render --check --views standard
 POCKY_POSE=100 uv run cad build pocky/linkage_motion --render --check --views standard --out out/pocky/linkage_motion_100
 uv run cad build pocky/prototype --render --check --views standard
+uv run cad build pocky/syringe3 --render --check --views standard
 ```
 
 `POCKY_POSE` is the percent of button travel (`0`, `25`, `50`, `75`, `100`). Output goes to `out/pocky/<model>/`. The M1 sweep is `projects/pocky/docs/m1_sweep.py`. The prototype sweep is `projects/pocky/docs/prototype_sweep.py`; it writes `out/pocky/prototype/gate_a.json`. The ejection cycle is `projects/pocky/docs/prototype_animation.py`; with the OCP CAD Viewer open it plays in the viewer.
@@ -31,6 +32,14 @@ uv run cad build pocky/prototype --render --check --views standard
 | `magazine.headroom` | 20.0 | Loading room above the stack |
 | `magazine.capacity_test` | 10 | Packets in the current test (25 is the second test) |
 | `separator.gap` | 5.75 | Separator slot height; adjustable by shims |
+| `syringe3.exit_gap` | 7.8 | Syringe3 exit window height, 1.5x the packet (`syringe` keeps `separator.gap`) |
+| `syringe3.bore_length` | 176.0 | Syringe3 bore along X (x −91 to 85); 6 mm over `magazine.length_i`, grown at the back for the 8 mm rear ramp (`syringe` keeps `magazine.length_i`) |
+| `syringe3.target_protrusion` | 75.0 | Presented packet's leading edge past the exit wall at full stroke (57 mm past the shelf) |
+| `syringe3.min_protrusion` | 65.0 | Minimum protrusion (sets the minimum stroke) |
+| `syringe3.min_past_shelf` | 47.0 | Leading edge must clear the shelf end by this much |
+| `syringe3.plate_z0` | 0.2 | Pusher plate underside above the floor top |
+| `syringe3.plate_h` | 4.7 | Pusher plate thickness (top 4.9, 0.3 under packet 2) |
+| `syringe3.slot_h` | 5.2 | Rear wall slot height the plate runs in (and the rear ramp's underside) |
 | `structure.min_wall` | 2.4 | Minimum printable wall |
 | `printer.bed_x/y/z` | 360 | Prusa XL bed |
 | `material.*` | PETG | Density and filament diameter |
@@ -112,6 +121,41 @@ uv run --frozen --extra physics cad physics run pocky/syringe --scenario project
 
 Results (`out/mujoco-two-cycle/verdict.md`): wedge clamped PASSes all 22 checks. Blade clamped FAILs: packet 2 stays perched on the blade and the slider jams at 7.5 mm in cycle 2. Both free-housing runs FAIL because the housing recoils about 9-10 mm at each release.
 
+## syringe3 (next prototype)
+
+`pocky/syringe3` (`geometry/syringe3.py`, `models/syringe3.py`) fixes four bench problems. Values are from `params.toml` `[syringe3]` and the geometry docstring.
+
+- Exit gap 7.8 mm (`syringe3.exit_gap`, 1.5x the packet): one 5.2 mm packet passes, two (10.4 mm) do not. The wedge separator replaces the blade, with 60 deg lead-ins (`WEDGE_LEAD_IN_DEG`) so a packet landing off-centre rests on a slope, not a ledge.
+- Protrusion 75 mm (`target_protrusion`; `min_protrusion` 65, stroke 85 mm) with a return spring of 200 N/m: 42 beams, 7.5 mm tall, 10 mm preload, 19.0 N at full stroke.
+- Bore 176 mm (`bore_length`), lengthened 6 mm at the back, so the exit and the protrusion do not move. The rear-wall ramp is 8 mm deep at 35 deg from vertical (`RAMP_DEG`), its toe at x = −83 (0.5 mm behind a centred packet) and its face up to z = 19. At home the pusher plate face sits at x = −87, mid-way between the toe and the rear wall's inner face, 4 mm from each (`PLATE_WINDOW_MARGIN` requires at least 3). It meets a centred packet after 4.5 mm.
+- Pusher plate z 0.2 to 4.9 mm (`plate_z0` 0.2, `plate_h` 4.7), with an undercut lip: a 1.3 mm land, then 15 deg back to 0.6 mm behind the face, so a soft packet end is caught under it.
+- Pickup: `body_force` on `packet` ramps 0 to 1.0 N in +X over 1 s with `damping_n_s_m` 2.0; `remove_body` takes packet 1 out at the start of `settle_2`.
+- Assembly: the slider goes on from behind. The spring slides in from the open rear end, then the slider is pushed forward onto the rails (`geometry/syringe3.py` assembly steps 2-3). It cannot be dropped on from above.
+- Backstop clips (`clip_n`, `clip_s`), fitted last (assembly step 5): each snaps into a slab socket with the housing legs' split pin, and its plate stands 0.05 mm behind the slider leg at home (x 63.95 to 83.95). Pushing the handle back stops the legs on the clips, so the plate cannot leave the rear slot. The grooves' closed ends on the rails' front ends are the backup stop, 0.5 mm further back. The plate also sits 0.35 mm outside the arm, so an arm spreads 0.35 mm before it touches, against the 1.65 mm that unhooks it from its V rail. A flat screwdriver in the pry notch levers a clip off, and only then can the slider come off backwards. When the handle is let go from full stroke, the slider hits the clips at about 3 m/s, so check the clips for wear or cracking on the bench.
+- Assembly step 5: fit the clips last, with the slider home. To remove them, slide a flat screwdriver into the pry notch and lever each clip off; only then can the slider come off.
+- One clip per side guards the arm near the home stop. If the bench shows the arm bowing out mid-span, a second clip at about x −55 is the fix.
+
+Two-cycle runs, free and clamped housing:
+
+```
+uv run --frozen --extra physics cad physics run pocky/syringe3 --scenario projects/pocky/physics/scenarios/syringe3_two_cycle.json --acceptance projects/pocky/physics/syringe3_two_cycle_acceptance.json --options projects/pocky/physics/options/syringe3_two_cycle.toml --out out/mujoco-syringe3-two-cycle/free
+uv run --frozen --extra physics cad physics run pocky/syringe3 --scenario projects/pocky/physics/scenarios/syringe3_two_cycle.json --acceptance projects/pocky/physics/syringe3_two_cycle_acceptance.json --options projects/pocky/physics/options/syringe3_two_cycle_clamped.toml --out out/mujoco-syringe3-two-cycle/clamped
+```
+
+Exit codes: 0 PASS, 1 FAIL, 2 INCONCLUSIVE, 3 ERROR.
+
+Push-back: after a 2 s settle the pull actuator ramps to −30 N over 1 s (the handle pushed back), holds 1 s, releases and holds. The slider must stay within 0.5 mm of home, held by the legs on the backstop clips, and the plate must stay in the slot. Run it with the housing clamped: a free housing's contacts with its slider are filtered, so the joint's 0.5 mm guard is the stop instead.
+
+```
+uv run --frozen --extra physics cad physics run pocky/syringe3 --scenario projects/pocky/physics/scenarios/syringe3_push_back.json --acceptance projects/pocky/physics/syringe3_push_back_acceptance.json --options projects/pocky/physics/options/syringe3_two_cycle_clamped.toml --out out/mujoco-syringe3-push-back/clamped
+```
+
+Plate: `uv run --frozen python projects/pocky/docs/print_plate.py --model syringe3` writes `out/pocky/syringe3/syringe3_plate.3mf` (needs `prusa-slicer`). The footprint is 286.4 x 318.0 mm on the 360 mm bed (10 parts, four rows).
+
+Reprint from `syringe`: only the `handle` is unchanged (identical geometry), so `--skip handle` writes `out/pocky/syringe3/syringe3_plate_without_handle.3mf` with the other 9 parts. The feet are 2.3 mm shorter than the syringe's because the slab is deeper.
+
+Results (2026-10-27, `out/mujoco-syringe3/`): `v6-clamped` PASSes all 22 checks with the 176 mm bore, 8 mm ramp and front backstop clips (peak penetration 0.16 mm, bound 0.2). Packet 2 drops flat in front of the pusher and dispenses to 75 mm past the exit in cycle 2; the pickup stays hand speed. `push-back2-clamped` PASSes all 19 checks: a 30 N push on the handle stops the slider 0.05 mm behind home, on the clips. With the housing free, the housing still recoils at each release and drags packets out. That is accepted; the clamped run is the declared boundary condition.
+
 ## Docs
 
 - `docs/reference-notes.md`: observations from the reference dispenser.
@@ -122,7 +166,7 @@ Results (`out/mujoco-two-cycle/verdict.md`): wedge clamped PASSes all 22 checks.
 - `docs/m1_sweep.py`: Gate A pose sweep. Writes `out/pocky/linkage_motion/gate_a.json`.
 - `docs/prototype_sweep.py`: the same sweep on the printed prototype. Writes `out/pocky/prototype/gate_a.json`.
 - `docs/prototype_animation.py`: one ejection cycle in the OCP CAD Viewer. Writes `out/pocky/prototype/animation/simulation.json`.
-- `docs/print_plate.py`: lays every `pocky/syringe` part on one Prusa XL plate and writes the PrusaSlicer project `out/pocky/syringe/syringe_plate.3mf` (XL 2T, 0.20mm STRUCTURAL, Generic PETG). Needs `prusa-slicer` on PATH.
+- `docs/print_plate.py`: lays every `pocky/syringe` part (or `--model syringe3`) on one Prusa XL plate and writes the PrusaSlicer project `out/pocky/<model>/<model>_plate.3mf` (XL 2T, 0.20mm STRUCTURAL, Generic PETG). Needs `prusa-slicer` on PATH.
 - `docs/assembly.md`: how the printed parts go together, with renders of the STL meshes.
 - `plan-first-prototype.md` (repo root): first printed prototype, and the criteria for accepting it.
 - `report-current-progress.md` (repo root): what is done and what is not.

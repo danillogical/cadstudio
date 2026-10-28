@@ -1,12 +1,13 @@
 import "./style.css";
 import { AppController } from "./app/controller";
+import { FollowManager } from "./app/follow";
 import { renderBanner } from "./app/banner";
 import { JobPanel } from "./app/jobs-panel";
 import { targetFromSearch } from "./app/navigate";
 import { PlaybackController } from "./playback/controller";
 import { BrowserTransport } from "./transport/browser";
 import type { NavigateTarget } from "./transport/messages";
-import { TransportError, type CadStudioTransport, type Job } from "./transport/types";
+import { TransportError, type CadStudioTransport, type Job, type RunEntry } from "./transport/types";
 import { hasVsCodeApi, VsCodeTransport } from "./transport/vscode";
 import { Viewport, type LayerName } from "./viewport/viewport";
 
@@ -48,8 +49,25 @@ async function main(): Promise<void> {
       props: element("props"),
     },
   });
+  const follow = new FollowManager({
+    transport,
+    onStatus: (text) => {
+      element("follow-status").textContent = text;
+    },
+  });
+  const followBox = element<HTMLInputElement>("follow");
+  followBox.checked = follow.enabled;
+  followBox.addEventListener("change", () => follow.setEnabled(followBox.checked));
+  // A run that streams in is shown as soon as it has frames, wherever the user was looking.
+  const showLiveRun = () => {
+    showLayer("trajectory");
+    showRun.disabled = false;
+  };
   const playback = new PlaybackController({
     transport,
+    onOpened: (_id, live) => {
+      if (live) showLiveRun();
+    },
     viewport: viewport.layer("trajectory"),
     elements: {
       panel: element("playback"),
@@ -65,6 +83,7 @@ async function main(): Promise<void> {
       bodies: element("bodies"),
       contacts: element("contacts"),
       contactsNote: element("contacts-note"),
+      liveBadge: element("live-badge"),
     },
   });
 
@@ -78,16 +97,16 @@ async function main(): Promise<void> {
   showModel.addEventListener("click", () => showLayer("scene"));
   showRun.addEventListener("click", () => showLayer("trajectory"));
 
-  const openRun = async (runId: string) => {
+  const openRun = async (runId: string, autoplay = false) => {
     showLayer("trajectory");
-    await playback.openRun(runId);
+    await playback.openRun(runId, { autoplay });
     showRun.disabled = playback.displayedRunId === null;
   };
 
   const runPlaceholder = document.createElement("option");
   runPlaceholder.value = "";
   runPlaceholder.textContent = "Select a run…";
-  const refreshRuns = async (select?: string) => {
+  const refreshRuns = async (select?: string): Promise<RunEntry[]> => {
     try {
       const { runs } = await transport.listRuns();
       const current = select ?? runPicker.value;
@@ -100,8 +119,10 @@ async function main(): Promise<void> {
       }
       if (runs.some((run) => run.runId === current)) runPicker.value = current;
       runPicker.disabled = runs.length === 0;
+      return runs;
     } catch (error) {
       renderBanner(runBanner, { kind: "error", text: `Could not list runs: ${describe(error)}` });
+      return [];
     }
   };
 
@@ -112,8 +133,9 @@ async function main(): Promise<void> {
     }
     playback.handleJobFinished(job);
     const runId = job.artifacts.runId;
-    if (job.status === "succeeded" && runId) {
-      void refreshRuns(runId).then(() => openRun(runId));
+    const alreadyShown = follow.enabled && (playback.liveId === runId || playback.displayedRunId === runId);
+    if (job.status === "succeeded" && runId && !alreadyShown) {
+      void refreshRuns(runId).then(() => openRun(runId, follow.enabled));
     } else {
       void refreshRuns();
     }
@@ -149,8 +171,33 @@ async function main(): Promise<void> {
   runPicker.appendChild(runPlaceholder);
   runPicker.disabled = true;
 
+  let modelsLoaded = false;
+  const hasModel = (model: string) => [...picker.options].some((option) => option.value === model);
+  // Fill the picker from the service's list, keeping the current selection when it is listed.
+  const fillPicker = (models: string[]) => {
+    const current = picker.value;
+    picker.replaceChildren(placeholder);
+    for (const model of models) {
+      const option = document.createElement("option");
+      option.value = model;
+      option.textContent = model;
+      picker.appendChild(option);
+    }
+    picker.disabled = models.length === 0;
+    picker.value = models.includes(current) ? current : "";
+  };
+  // Re-read the model list, since a model created after startup is not in the picker yet.
+  const refreshModels = async () => {
+    try {
+      fillPicker((await transport.listModels()).models);
+    } catch {
+      // Keep the list we have; a navigate that still misses reports the unknown model.
+    }
+  };
+
   const selectModel = (model: string) => {
     picker.value = model;
+    follow.setModel(model);
     showLayer("scene");
     void controller.loadModel(model);
     void jobs.setModel(model);
@@ -162,6 +209,28 @@ async function main(): Promise<void> {
     if (runPicker.value) void openRun(runPicker.value);
   });
 
+  // Live ids already opened or offered, so a late event of an old run never reopens it.
+  const seenLive = new Set<string>();
+  const openLive = (liveId: string) => {
+    seenLive.add(liveId);
+    void playback.openLive(liveId);
+  };
+  const onLiveEvent = (event: { liveId: string; frames: number; done: boolean }) => {
+    if (!follow.enabled) return;
+    if (playback.liveId === event.liveId) playback.handleLive(event);
+    else if (!event.done && !seenLive.has(event.liveId)) openLive(event.liveId);
+  };
+  // A finished run in follow mode plays by itself; a run being streamed is swapped in place.
+  const onRunEvent = (runId: string) => {
+    if (!follow.enabled) {
+      void refreshRuns();
+      return;
+    }
+    void refreshRuns().then((runs) => {
+      if (playback.runId === runId || playback.liveId === runId) return;
+      if (runs.some((run) => run.runId === runId && run.status)) void openRun(runId, true);
+    });
+  };
   const unsubscribe = transport.subscribe((event) => {
     if (event.type === "connection") {
       if (event.state === "error") {
@@ -172,20 +241,40 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (event.type === "artifact" && event.kind === "live") {
+      onLiveEvent(event);
+      return;
+    }
+    if (event.type === "artifact" && event.kind === "run") onRunEvent(event.runId);
+    // A scene built for a model the picker has not seen means a new model: list it, do not switch.
+    if (event.type === "artifact" && event.kind === "scene" && modelsLoaded && !hasModel(event.model)) {
+      void refreshModels();
+    }
     // The job panel reports its own job's finish once; everything else goes to the scene.
     if (jobs.owns(event)) jobs.handleEvent(event);
     else controller.handleEvent(event);
-    if (event.type === "artifact" && event.kind === "run") void refreshRuns();
   });
   globalThis.addEventListener("pagehide", () => {
     unsubscribe();
+    follow.dispose();
     jobs.dispose();
     playback.dispose();
     controller.dispose();
     viewport.dispose();
   });
 
-  let modelsLoaded = false;
+  // At startup, join a run that is still being written (and began within the last 30 s).
+  const openRecentLive = async () => {
+    try {
+      const { lives } = await transport.listLive();
+      const now = Date.now() / 1000;
+      const recent = lives.find((live) => !live.done && live.mtime !== null && now - live.mtime < 30);
+      if (recent && playback.liveId === null && playback.runId === null) openLive(recent.liveId);
+    } catch {
+      // A service without live runs just has nothing to join.
+    }
+  };
+
   let markInitialised: () => void = () => {};
   const initialised = new Promise<void>((resolve) => {
     markInitialised = resolve;
@@ -195,12 +284,13 @@ async function main(): Promise<void> {
     await initialised;
     if (!modelsLoaded) return; // The service error is already on the banner.
     if ("model" in target) {
-      if ([...picker.options].some((option) => option.value === target.model)) selectModel(target.model);
+      if (!hasModel(target.model)) await refreshModels();
+      if (hasModel(target.model)) selectModel(target.model);
       else renderBanner(banner, { kind: "error", text: `Unknown model ${target.model}.` });
       return;
     }
     await refreshRuns(target.run);
-    await openRun(target.run);
+    await openRun(target.run, true);
   };
   if (vscodeTransport) {
     vscodeTransport.onNavigate((target) => void navigate(target));
@@ -216,18 +306,12 @@ async function main(): Promise<void> {
       });
     }
     const models = await transport.listModels();
-    picker.replaceChildren(placeholder);
-    for (const model of models.models) {
-      const option = document.createElement("option");
-      option.value = model;
-      option.textContent = model;
-      picker.appendChild(option);
-    }
-    picker.disabled = models.models.length === 0;
+    fillPicker(models.models);
     modelsLoaded = true;
     void refreshRuns();
     if (models.models.length === 1 && !urlTarget) {
       picker.value = models.models[0];
+      follow.setModel(models.models[0]);
       void jobs.setModel(models.models[0]);
       await controller.loadModel(models.models[0]);
     }
@@ -235,6 +319,7 @@ async function main(): Promise<void> {
     renderBanner(banner, { kind: "error", text: `Could not reach the GUI service: ${describe(error)}` });
   }
   markInitialised();
+  if (follow.enabled && !urlTarget) void openRecentLive();
   if (urlTarget) await navigate(urlTarget);
 }
 

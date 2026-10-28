@@ -279,11 +279,25 @@ class BodyForceSpec:
 
     The force is ``force_n`` (N), or a linear ramp ``force_n`` to ``force_end_n`` across the
     phase with the same ``(k+1)/N`` convention as ``effort_end``. It is not actuator input.
+
+    ``damping_n_s_m`` (optional, >= 0, N s/m) makes the force a controlled-speed hand instead
+    of a pure force. With ``F_ramp(t)`` the ramp above, ``u = F_ramp / |F_ramp|`` and
+    ``v`` the body's world-frame COM linear velocity at the start of the step (a pure function
+    of ``qpos``/``qvel``, so replay recomputes it exactly), the applied force is::
+
+        F = max(|F_ramp| - damping * (v . u), 0) * u
+
+    That is ``F_ramp - damping * v`` projected on ``u`` with the component clamped at >= 0:
+    the hand resists fast motion along the pull but never pushes the body back, and the
+    perpendicular part of ``-damping * v`` is dropped. A zero ``F_ramp`` gives zero force.
+    Absent or ``0`` means the plain ramp, and an unset field is omitted from :meth:`to_dict`
+    so a scenario without it keeps its hash.
     """
 
     body: str
     force_n: tuple[float, float, float]
     force_end_n: tuple[float, float, float] | None = None
+    damping_n_s_m: float | None = None
 
     def force_at(self, step: int, steps: int) -> tuple[float, float, float]:
         """Force at 0-based ``step`` of ``steps``; the last step is exactly ``force_end_n``."""
@@ -298,6 +312,8 @@ class BodyForceSpec:
         out: dict = {"body": self.body, "force_n": list(self.force_n)}
         if self.force_end_n is not None:
             out["force_end_n"] = list(self.force_end_n)
+        if self.damping_n_s_m is not None:
+            out["damping_n_s_m"] = self.damping_n_s_m
         return out
 
 
@@ -314,6 +330,16 @@ class PhaseSpec:
     operator's hand can act while the actuator input is zero (a ``release`` or ``hold`` phase
     with ``body_force`` still has zero actuator input). It is rejected on ``reset`` and
     ``settle``. The force is cleared at every phase boundary.
+
+    ``remove_body`` (optional) names a free body that leaves the scene at the **start** of
+    this phase, before its first step, as when an operator takes a dispensed packet away. It
+    is allowed on every timed phase and rejected on ``reset``. The runner then parks the body
+    (see :data:`cadkit.physics.telemetry.PARK_DISTANCE_M`), zeroes its velocity, disables
+    contacts on its geoms and re-pins it after every later step, so it never interacts again.
+    The body must exist, be free, and not already be removed; an acceptance check or event
+    may not observe it at or after the removal phase (``resolve_references`` rejects that).
+    Like every optional field it is omitted from :meth:`to_dict` when unset, so a scenario
+    without it keeps its hash.
     """
 
     name: str
@@ -324,6 +350,7 @@ class PhaseSpec:
     effort: float | None = None
     effort_end: float | None = None
     body_force: BodyForceSpec | None = None
+    remove_body: str | None = None
 
     def effort_at(self, step: int, steps: int) -> float:
         """Effort at 0-based ``step`` of ``steps``: linear ramp ``effort`` to ``effort_end``, last step exactly ``effort_end``."""
@@ -349,6 +376,8 @@ class PhaseSpec:
             out["effort_end"] = self.effort_end
         if self.body_force is not None:
             out["body_force"] = self.body_force.to_dict()
+        if self.remove_body is not None:
+            out["remove_body"] = self.remove_body
         return out
 
 
@@ -387,6 +416,23 @@ class ScenarioSpec:
 
     def hash(self) -> str:
         return content_hash(self.to_dict())
+
+    def removals(self) -> dict[str, int]:
+        """``body -> index into phases`` of the phase whose start removes that body.
+
+        A body removed twice is an error, so a typed spec built without the loader is
+        rejected here too.
+        """
+        out: dict[str, int] = {}
+        for index, phase in enumerate(self.phases):
+            if phase.remove_body is None:
+                continue
+            if phase.remove_body in out:
+                raise ScenarioError(
+                    f"scenario phase {phase.name!r}: body {phase.remove_body!r} was already "
+                    f"removed by phase {self.phases[out[phase.remove_body]].name!r}")
+            out[phase.remove_body] = index
+        return out
 
 
 @dataclass(frozen=True)
@@ -878,8 +924,10 @@ def _scenario_from_obj(obj: dict, raw_text: str) -> ScenarioSpec:
             f"found reset indices {resets}")
     if len(phases) < 2:
         raise ScenarioError("scenario.phases needs a reset phase and at least one timed phase")
-    return ScenarioSpec(scenario_id, fixture, seed, phases, timestep, interval, budgets,
+    spec = ScenarioSpec(scenario_id, fixture, seed, phases, timestep, interval, budgets,
                         raw_text)
+    spec.removals()
+    return spec
 
 
 def _load_phase(item, index: int) -> PhaseSpec:
@@ -889,7 +937,7 @@ def _load_phase(item, index: int) -> PhaseSpec:
     kind_required = ("name", "kind")
     _check_keys(item, where, required=kind_required,
                 optional=("duration_s", "initial", "actuator", "effort", "effort_end",
-                          "body_force"))
+                          "body_force", "remove_body"))
     name = _safe_id(_string(item, "name", where), f"{where}.name")
     kind = _string(item, "kind", where, choices=PHASE_KINDS)
     initial: dict[str, float] = {}
@@ -911,9 +959,10 @@ def _load_phase(item, index: int) -> PhaseSpec:
             initial[joint] = value
     if kind == "reset":
         if ("duration_s" in item or "actuator" in item or "effort" in item
-                or "effort_end" in item or "body_force" in item):
+                or "effort_end" in item or "body_force" in item or "remove_body" in item):
             raise ScenarioError(
-                f"{where}: a reset phase has no duration, actuator, effort or body_force")
+                f"{where}: a reset phase has no duration, actuator, effort, body_force or "
+                f"remove_body")
         return PhaseSpec(name=name, kind=kind, initial=tuple(sorted(initial.items())))
     if "initial" in item:
         raise ScenarioError(f"{where}: only a reset phase may declare initial coordinates")
@@ -939,19 +988,25 @@ def _load_phase(item, index: int) -> PhaseSpec:
                 f"{where}: {kind!r} phases must not declare body_force "
                 f"(allowed on {list(BODY_FORCE_PHASE_KINDS)})")
         body_force = _load_body_force(item["body_force"], f"{where}.body_force")
+    remove_body = None
+    if "remove_body" in item:
+        remove_body = _safe_id(_string(item, "remove_body", where), f"{where}.remove_body")
     return PhaseSpec(name=name, kind=kind, duration_s=duration, initial=(),
                      actuator=actuator, effort=effort, effort_end=effort_end,
-                     body_force=body_force)
+                     body_force=body_force, remove_body=remove_body)
 
 
 def _load_body_force(item, where: str) -> BodyForceSpec:
     if not isinstance(item, dict):
         raise ScenarioError(f"{where} must be an object")
-    _check_keys(item, where, required=("body", "force_n"), optional=("force_end_n",))
+    _check_keys(item, where, required=("body", "force_n"),
+                optional=("force_end_n", "damping_n_s_m"))
     body = _safe_id(_string(item, "body", where), f"{where}.body")
     force = _numbers(item, "force_n", where, 3)
     force_end = _numbers(item, "force_end_n", where, 3) if "force_end_n" in item else None
-    return BodyForceSpec(body=body, force_n=force, force_end_n=force_end)
+    damping = (_number(item, "damping_n_s_m", where, nonnegative=True)
+               if "damping_n_s_m" in item else None)
+    return BodyForceSpec(body=body, force_n=force, force_end_n=force_end, damping_n_s_m=damping)
 
 
 def load_acceptance(path: str | Path) -> AcceptanceSpec:

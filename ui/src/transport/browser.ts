@@ -1,7 +1,11 @@
 import {
+  type ArtifactRange,
   type CadStudioTransport,
+  type FollowLease,
   type HealthInfo,
   type Job,
+  type LiveDoc,
+  type LiveList,
   type ModelList,
   type PhysicsInputs,
   type RunList,
@@ -166,6 +170,22 @@ export class BrowserTransport implements CadStudioTransport {
     return jobOf(doc);
   }
 
+  async follow(model: string): Promise<FollowLease> {
+    return this.request<FollowLease>("/v1/follow", { method: "POST", body: JSON.stringify({ model }) });
+  }
+
+  async unfollow(model: string): Promise<void> {
+    await this.request<Record<string, unknown>>("/v1/follow", { method: "DELETE", body: JSON.stringify({ model }) });
+  }
+
+  async listLive(): Promise<LiveList> {
+    return this.request<LiveList>("/v1/live");
+  }
+
+  async getLive(liveId: string): Promise<LiveDoc> {
+    return this.request<LiveDoc>(`/v1/live/${encodePath(liveId)}`);
+  }
+
   /** EventSource cannot send headers, so the token rides in the query string. */
   subscribe(listener: (event: ServiceEvent) => void): () => void {
     if (!this.EventSourceImpl) {
@@ -193,11 +213,19 @@ export class BrowserTransport implements CadStudioTransport {
   }
 
   /** Fetched with the bearer header, so the token stays out of artifact URLs. */
-  async getArtifact(path: string): Promise<ArrayBuffer> {
-    const response = await this.send(`/v1/artifacts/${encodePath(path)}`);
+  async getArtifact(path: string, range?: ArtifactRange): Promise<ArrayBuffer> {
+    const ranged = range !== undefined && range.offset > 0;
+    const response = await this.send(
+      `/v1/artifacts/${encodePath(path)}`,
+      ranged ? { headers: { Range: `bytes=${range.offset}-` } } : {},
+    );
+    // 416 means the offset is the file size: nothing new yet.
+    if (ranged && response.status === 416) return new ArrayBuffer(0);
     if (!response.ok) throw httpError(response, parseJson(await response.text()));
     try {
-      return await response.arrayBuffer();
+      const bytes = await response.arrayBuffer();
+      // A server that ignored the Range header sent the whole file.
+      return ranged && response.status === 200 ? bytes.slice(range.offset) : bytes;
     } catch (error) {
       throw new TransportError(0, `network error: ${errorMessage(error)}`);
     }

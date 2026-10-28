@@ -13,7 +13,7 @@ Artifact contracts (plan-gui.md section 3.1)
 **Trajectory** (``<run>/../<run-name>.gui/``, written by ``cad gui trajectory RUN_DIR``; the run dir itself is never written to):
 - ``trajectory.json`` contains:
   - ``schemaVersion: 1``, ``units: "mm"``, the run id, and the source ``manifest.json`` sha256;
-  - ``bodies[]``, each with ``name``, a list of meshes (geom name, ``.glb`` path, local pose) and ``fixed`` (welded to the world);
+  - ``bodies[]``, each with ``name``, a list of meshes (geom name, ``.glb`` path, local pose), ``fixed`` (welded to the world) and ``removedAt`` (sim seconds at which a scenario ``remove_body`` took the body out, else null);
   - ``phases[]`` (name, t0, t1);
   - ``frameCount``, ``times``, and a pointer to the poses.
 - ``poses.bin`` is little-endian float32, ``[frame][body][x,y,z,qw,qx,qy,qz]``, positions in mm. It is sampled at a fixed fps (default 60 sim-fps) from ``states.npz``.
@@ -29,13 +29,17 @@ Service surface (plan-gui.md section 3.2; ``schemaVersion`` on every response)
 | ``GET /v1/health`` | identity, protocol version, repo root (no token needed; no secrets) |
 | ``GET /v1/models`` | ``cad list`` as JSON |
 | ``GET /v1/models/{project}/{model}/scene`` | latest scene manifest, or 404 with the command that would build it |
-| ``POST /v1/models/{project}/{model}/build`` | job: build, check, then scene export |
+| ``POST /v1/models/{project}/{model}/build`` | job: ``cad build --check --scene`` in a subprocess |
 | ``GET /v1/runs`` | physics run dirs found under ``out/`` (has ``summary.json`` and ``states.npz``), newest first |
 | ``GET /v1/runs/{runId}/trajectory`` | trajectory manifest (exports on first request) |
 | ``POST /v1/runs`` | job: ``cad physics run`` with a scenario, acceptance and options chosen from files already in the project |
 | ``GET /v1/jobs/{id}``, ``POST /v1/jobs/{id}/cancel`` | job state, log tail, artifacts |
-| ``GET /v1/artifacts/{path}`` | stream a file **only** from ``out/<project>/…/scene/`` or a ``.gui/`` trajectory dir, after canonicalising the path |
+| ``GET /v1/artifacts/{path}`` | stream a file **only** from ``out/<project>/…/scene/``, a ``.gui/`` trajectory dir or a ``.live/`` sidecar, after canonicalising the path; honours ``Range`` |
+| ``GET /v1/live`` | live sidecars (``<liveId>.live/`` with a ``live.json``) under ``out/``, newest first |
+| ``GET /v1/live/{liveId}`` | one sidecar's ``live.json`` |
 | ``GET /v1/events`` | SSE stream of job and artifact changes |
+| ``POST /v1/follow`` | follow ``{model}``: rebuild it when its project's sources change (leased) |
+| ``DELETE /v1/follow``, ``GET /v1/follow`` | stop following ``{model}`` (or everything); list follows |
 | ``POST /v1/open`` | create a one-time open request for ``{model}``, ``{run}`` or ``{}`` (``cad gui open``) |
 | ``GET /v1/open/{id}`` | claim an open request (single use): its target and the repo root |
 | ``POST /v1/open/{id}/ack``, ``POST /v1/open/{id}/nack`` | the editor opened the target, or refused with ``{reason}`` |
@@ -59,7 +63,9 @@ Deviations and response details
 - ``runId`` is a POSIX path relative to ``out/``. Trajectory artifacts live beside the run in
   ``<run>.gui/``, so their artifact path is ``<runId>.gui/<file>``.
 - A build job with a failing check leaves the previous scene in place and marks it ``stale``.
-  In-process OCCT work cannot be interrupted, so only physics jobs can be cancelled.
+  Builds run as ``python -m cadkit.cli build <model> --check --scene --json`` subprocesses, so they
+  always import the current sources and can be cancelled (killing the process group) once the
+  subprocess is running.
 - ``GET /v1/models/{project}/{model}/physics-inputs`` (token required) lists the files a run may
   use: ``scenarios`` (``physics/scenarios/*.json``), ``acceptance`` (``physics/*_acceptance.json``)
   and ``options`` (``physics/options/*.toml``), each entry ``{"name", "path"}`` with ``path``
@@ -67,6 +73,50 @@ Deviations and response details
 - ``POST /v1/runs`` accepts a scenario, acceptance or options path only when it is in that
   listing, spelled repo-relative (as listed) or project-relative. Traversal, absolute and
   outside-project paths are 403, a missing file is 400, and an existing unlisted file is 403.
+
+Live runs (contract in ``cadkit/physics/live.py``; all token-protected)
+
+- ``cad physics run`` (so also ``POST /v1/runs`` jobs) streams poses to ``<run>.live/`` beside
+  the run dir. ``liveId`` is that dir's path relative to ``out/`` without ``.live``, which is
+  also the ``runId`` the finished run gets; its files are ``<liveId>.live/<file>``.
+- ``GET /v1/live``: 200 ``{lives: [{liveId, frames, done, status, mtime}]}``, newest
+  ``live.json`` mtime first. Dirs without a readable ``live.json`` object are left out;
+  symlinked dirs are never entered.
+- ``GET /v1/live/{liveId}``: 200 with the ``live.json`` object itself (its keys at the top
+  level). 403 for traversal, absolute or symlinked paths, 404 when there is no such sidecar.
+- Growing ``poses.bin``: fetch ``GET /v1/artifacts/<liveId>.live/poses.bin`` with
+  ``Range: bytes=<frames_seen * frameBytes>-``. A single ``bytes=N-``, ``bytes=N-M`` or
+  ``bytes=-N`` range answers 206 with ``Content-Range``; a start at or past the end answers 416
+  with ``Content-Range: bytes */<size>``; other ``Range`` values are ignored (200, whole file).
+  Every artifact response carries ``Accept-Ranges: bytes``, and its body is exactly the size
+  stat'ed when the file was opened, so a file growing mid-response cannot overrun it. Trust
+  ``frames`` from ``live.json``, not the byte count: the file may already hold a partial frame.
+
+Events (``GET /v1/events``; SSE ``id``, ``event`` and a JSON ``data`` line)
+
+- ``job`` ``{job}``: a job was queued, started, cancelled or finished (the ``GET /v1/jobs/{id}`` doc).
+- ``artifact`` ``{kind: "scene", model}``: ``out/<model>/scene/scene.json`` changed, from a
+  service build job or any other writer (``cad gui scene``, ``cad build --scene``).
+- ``artifact`` ``{kind: "run", runId}``: a run dir appeared under ``out/`` or its
+  ``summary.json`` changed, from a service physics job or an external ``cad physics run``.
+- ``artifact`` ``{kind: "live", liveId, frames, done}``: a ``<liveId>.live/`` sidecar's
+  ``live.json`` or ``poses.bin`` changed (at most about two per second per live dir).
+- External writes are found by polling (``cadkit/gui/watch.py``, 1 s by default); each change is
+  announced once, and a service job's own outputs only by the job.
+
+Follow (all token-protected, held in memory only; rules in ``cadkit/gui/watch.py``)
+
+- ``POST /v1/follow`` with ``{"model": "<project>/<model>"}`` (validated like ``POST /v1/open``:
+  404 unless it resolves) starts or renews a follow. 200 ``{model, expiresAt, leaseSeconds,
+  following}``; the follow lapses ``leaseSeconds`` (60) after the last POST, so a client re-POSTs
+  well inside that (the UI every ~20 s). While followed, a change to any ``*.py``/``*.toml`` under
+  ``projects/<project>/`` queues one ordinary build job after 1.5 s of quiet; a build already
+  queued for the model absorbs the change, and a running one gets at most one follow-up. Its
+  first log line names the changed files.
+- ``DELETE /v1/follow`` with ``{"model": "<project>/<model>"}`` stops that follow; with no body or
+  ``{}`` it stops every follow. Follows are per model, not per client. 200 ``{following}``.
+- ``GET /v1/follow``: 200 ``{leaseSeconds, following}``, ``following`` being
+  ``[{model, expiresAt}]`` sorted by model.
 
 Open requests (``cad gui open``; all token-protected, held in memory only)
 
@@ -101,6 +151,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -113,7 +164,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..params import REPO_ROOT
-from ..project import Project, all_models, discover, list_models, load_model, resolve
+from ..project import Project, all_models, discover, list_models, resolve
+from . import watch as _watch
+from .watch import Watcher, is_run_dir, walk_out
 
 PROTOCOL_VERSION = 1
 SCHEMA_VERSION = 1
@@ -132,6 +185,8 @@ _RUN_TRAJECTORY = re.compile(r"^/v1/runs/(.+)/trajectory$")
 _JOB = re.compile(r"^/v1/jobs/([^/]+)$")
 _JOB_CANCEL = re.compile(r"^/v1/jobs/([^/]+)/cancel$")
 _ARTIFACT = re.compile(r"^/v1/artifacts/(.*)$")
+_LIVE = re.compile(r"^/v1/live/(.+)$")
+_RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 _OPEN = re.compile(r"^/v1/open/([^/]+)$")
 _OPEN_ACTION = re.compile(r"^/v1/open/([^/]+)/(ack|nack|status)$")
 _OPEN_ID = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
@@ -398,7 +453,11 @@ class GuiService:
     """The loopback HTTP service, its job table and its discovery record."""
 
     def __init__(self, *, repo_root=REPO_ROOT, out_root=None, port: int = 0,
-                 quiet: bool = False) -> None:
+                 quiet: bool = False, watch: bool = True,
+                 watch_interval: float = _watch.DEFAULT_INTERVAL_S,
+                 watch_debounce: float = _watch.DEFAULT_DEBOUNCE_S,
+                 follow_lease: float = _watch.DEFAULT_LEASE_S,
+                 live_interval: float = _watch.DEFAULT_LIVE_INTERVAL_S) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.out_root = Path(out_root) if out_root is not None else self.repo_root / "out"
         self.out_root = self.out_root.resolve()
@@ -417,6 +476,9 @@ class GuiService:
         self.events = EventBus()
         self.queue = JobQueue(self)
         self.open_requests = OpenRequestStore()
+        self.watch = watch
+        self.watcher = Watcher(self, interval=watch_interval, debounce=watch_debounce,
+                               lease=follow_lease, live_interval=live_interval)
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
         self.server.daemon_threads = True
         self.server.service = self
@@ -432,14 +494,17 @@ class GuiService:
         self._thread = threading.Thread(target=self.server.serve_forever, daemon=True,
                                         name="cadgui-server")
         self._thread.start()
+        if self.watch:
+            self.watcher.start()
 
     def close(self) -> None:
         self.stop_event.set()
+        self.watcher.stop()
         for job in list(self.jobs.values()):
             if job.status == "queued":
                 job.status = "cancelled"
                 job.finishedAt = time.time()
-            elif job.kind == "run" and job.status == "running":
+            elif job.status == "running":
                 _kill(job)
         if self._started:
             self.server.shutdown()
@@ -506,13 +571,20 @@ class GuiService:
         job.status = "running"
         job.startedAt = time.time()
         self.publish("job", {"job": job.to_dict()})
+        # The watcher skips what this job writes until the job records and announces it itself.
+        run_out = job.payload.get("out") if job.kind == "run" else None
+        watch_key = job.key if run_out is None else _relative_to(Path(run_out), self.out_root)
+        self.watcher.begin_job(job.kind, watch_key)
         try:
             if job.kind == "build":
                 project = job.payload["project"]
-                _build_model(self, job, project, job.payload["model"], job.payload["sets"])
+                if _build_model(self, job, project, job.payload["model"],
+                                job.payload["sets"]) is False:
+                    return
                 job.artifacts = {"scene": f"{job.key}/scene/scene.json"}
                 self.scene_state[(project.name, job.payload["model"])] = {
                     "stale": False, "error": None, "job": job.id}
+                self.watcher.note_scene(job.key)
                 self.publish("artifact", {"kind": "scene", "model": job.key})
             else:
                 _run_physics(self, job, job.payload["cmd"], job.payload["out"])
@@ -524,10 +596,30 @@ class GuiService:
                 self.scene_state[(project.name, job.payload["model"])] = {
                     "stale": True, "error": str(exc), "job": job.id}
         finally:
+            self.watcher.end_job(job.kind, watch_key)
             if job.status == "running":
                 job.status = "succeeded"
             job.finishedAt = time.time()
             self.publish("job", {"job": job.to_dict()})
+
+    def submit_build(self, project: Project, model: str, sets: dict, *,
+                     reason: str | None = None) -> Job:
+        """Queue a build job for ``<project>/<model>``; ``reason`` becomes its first log line."""
+        key = f"{project.name}/{model}"
+        job = Job(kind="build", key=key, model=key)
+        job.payload = {"project": project, "model": model, "sets": sets}
+        if reason:
+            job.log.append(reason)
+        self.queue.submit(job)
+        return job
+
+    def submit_follow_build(self, project: Project, model: str, reason: str) -> Job | None:
+        """A follow-mode rebuild, unless a build of the model is already queued (coalesced)."""
+        key = f"{project.name}/{model}"
+        if any(job.kind == "build" and job.key == key and job.status == "queued"
+               for job in list(self.jobs.values())):
+            return None
+        return self.submit_build(project, model, {}, reason=reason)
 
     def cancel(self, job: Job) -> None:
         if job.status == "queued":
@@ -537,8 +629,8 @@ class GuiService:
             return
         if job.status != "running":
             raise _HttpError(409, f"job {job.id} is already {job.status}")
-        if job.kind != "run":
-            raise _HttpError(409, "running build jobs cannot be cancelled")
+        if job.kind == "build" and job._proc is None:
+            raise _HttpError(409, "build job cannot be cancelled before its subprocess starts")
         job._cancel.set()
         job.status = "cancelled"
         _kill(job)
@@ -727,41 +819,75 @@ def _coerce_sets(doc) -> dict:
     return out
 
 
-def _build_model(service: GuiService, job: Job, project: Project, model: str,
-                 sets: dict) -> None:
-    """Build, export, check, then write the scene; raise on any failure."""
-    from ..checks import has_failures, run_checks, write_report
-    from ..export import export_assembly, export_part
-    from ..params import override
-    from .scene import write_scene
+def _build_command(spec: str, sets: dict) -> list[str]:
+    """The ``cad build`` command line for one build job (tests stub this)."""
+    cmd = [sys.executable, "-m", "cadkit.cli", "build", spec, "--check", "--scene", "--json"]
+    if sets:
+        cmd += ["--set", *(f"{key}={value}" for key, value in sets.items())]
+    return cmd
 
+
+def _build_model(service: GuiService, job: Job, project: Project, model: str,
+                 sets: dict) -> bool:
+    """Build, check and write the scene in a fresh subprocess so edited sources are never stale.
+
+    Returns False if the job was cancelled; raises on any failure.
+    """
+    spec = f"{project.name}/{model}"
+    outdir = service.out_root / project.name / model
     with _CAD_LOCK:
-        outdir = service.out_root / project.name / model
+        if job._cancel.is_set():
+            job.status = "cancelled"
+            return False
         outdir.mkdir(parents=True, exist_ok=True)
-        p = project.load_params(project.params_path)
-        if sets:
+        cmd = _build_command(spec, sets) + ["--out", str(outdir)]
+        with tempfile.TemporaryFile("w+", encoding="utf-8") as result:
+            proc = subprocess.Popen(cmd, cwd=service.repo_root, stdout=result,
+                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
+            with job._proc_lock:
+                job._proc = proc
+            if job._cancel.is_set():
+                # Cancel arrived between the check above and the Popen: kill the fresh process.
+                _kill(job)
             try:
-                p = override(p, sets)
-            except KeyError as exc:
-                raise RuntimeError(f"unknown parameter {exc}") from None
-        parts = load_model(project, model).build(p)
-        job.log.append(f"built {len(parts)} part(s)")
-        for name, part in parts.items():
-            for path in export_part(name, part, outdir).values():
-                job.log.append(f"wrote {path.name}")
-        assembly = export_assembly(parts, outdir)
-        job.log.append(f"wrote {assembly.name}")
-        results = {name: run_checks(name, part, p, project) for name, part in parts.items()}
-        write_report(results, outdir)
-        for name, checks in results.items():
-            for result in checks:
-                job.log.append(f"check {name} {result.name}: {result.status}")
-        if has_failures(results):
-            failures = ", ".join(f"{name}:{result.name}" for name, checks in results.items()
-                                 for result in checks if result.status == "fail")
+                if proc.stderr is not None:
+                    for line in proc.stderr:
+                        job.log.append(line.rstrip("\n"))
+                code = proc.wait()
+            finally:
+                if proc.stderr is not None:
+                    proc.stderr.close()
+                with job._proc_lock:
+                    job._proc = None
+            result.seek(0)
+            text = result.read()
+    job.exitCode = code
+    if job.status == "cancelled" or job._cancel.is_set():
+        job.status = "cancelled"
+        return False
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        doc = {}
+    if not isinstance(doc, dict):
+        doc = {}
+    for name, checks in (doc.get("checks") or {}).items():
+        for result_ in checks:
+            job.log.append(f"check {name} {result_['name']}: {result_['status']}")
+    for path in doc.get("written") or []:
+        job.log.append(f"wrote {Path(path).name}")
+    if doc.get("scene"):
+        job.log.append(f"wrote {Path(doc['scene']).name}")
+    if code != 0:
+        failures = ", ".join(f"{name}:{result_['name']}"
+                             for name, checks in (doc.get("checks") or {}).items()
+                             for result_ in checks if result_["status"] == "fail")
+        if failures:
             raise RuntimeError(f"checks failed: {failures}")
-        state = write_scene(f"{project.name}/{model}", sets=sets, out=outdir / "scene")
-        job.log.append(f"wrote {state['scene'].name}")
+        raise RuntimeError(doc.get("error") or f"cad build exited with code {code}")
+    if not doc.get("scene"):
+        raise RuntimeError("cad build wrote no scene")
+    return True
 
 
 def _physics_command(spec: str, scenario: str, acceptance: str, options: str | None,
@@ -823,6 +949,7 @@ def _run_physics(service: GuiService, job: Job, cmd: list[str], out: Path) -> No
     job.exitCode = code
     if out.exists():
         job.artifacts = {"runId": _relative_to(out, service.out_root)}
+        service.watcher.note_run(job.artifacts["runId"])
         service.publish("artifact", {"kind": "run", "runId": job.artifacts["runId"]})
     if job.status == "cancelled" or job._cancel.is_set():
         job.status = "cancelled"
@@ -931,6 +1058,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         match = _ARTIFACT.fullmatch(path)
         if match:
             return self._require(method, "GET") or self._artifact(match.group(1))
+        if path == "/v1/live":
+            return self._require(method, "GET") or self._lives()
+        match = _LIVE.fullmatch(path)
+        if match:
+            return self._require(method, "GET") or self._live(match.group(1))
         if path == "/v1/models":
             return self._require(method, "GET") or self._models()
         if path == "/v1/runs":
@@ -941,6 +1073,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(405, "method not allowed")
         if path == "/v1/events":
             return self._require(method, "GET") or self._events()
+        if path == "/v1/follow":
+            if method == "GET":
+                return self._follow_list()
+            if method == "POST":
+                return self._follow()
+            if method == "DELETE":
+                return self._unfollow()
+            raise _HttpError(405, "method not allowed")
         if path == "/v1/open":
             return self._require(method, "POST") or self._open_create()
         match = _OPEN_ACTION.fullmatch(path)
@@ -1010,7 +1150,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _send_error(self, status: int, message: str, **extra) -> None:
-        self._send_json(status, {"error": message, **extra})
+        headers = extra.pop("_headers", None)
+        self._send_json(status, {"error": message, **extra}, headers=headers)
 
     def _read_body(self):
         try:
@@ -1070,10 +1211,26 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(404, f"unknown model {project_name}/{model}")
         project = _resolve_or_404(f"{project_name}/{model}")
         sets = _coerce_sets(self._read_body())
-        job = Job(kind="build", key=f"{project.name}/{model}", model=f"{project.name}/{model}")
-        job.payload = {"project": project, "model": model, "sets": sets}
-        self.service.queue.submit(job)
+        job = self.service.submit_build(project, model, sets)
         self._send_json(202, {"job": job.to_dict()})
+
+    def _follow(self) -> None:
+        doc = self._read_body()
+        project, model = _follow_model(doc, required=True)
+        follow = self.service.watcher.follow(project, model)
+        self._send_json(200, {**follow, "leaseSeconds": self.service.watcher.lease,
+                              "following": self.service.watcher.following()})
+
+    def _unfollow(self) -> None:
+        doc = self._read_body()
+        target = _follow_model(doc, required=False)
+        self.service.watcher.unfollow(
+            None if target is None else f"{target[0].name}/{target[1]}")
+        self._send_json(200, {"following": self.service.watcher.following()})
+
+    def _follow_list(self) -> None:
+        self._send_json(200, {"leaseSeconds": self.service.watcher.lease,
+                              "following": self.service.watcher.following()})
 
     def _model_inputs(self, project_name: str, model: str) -> None:
         if not _SEGMENT.fullmatch(project_name) or not _SEGMENT.fullmatch(model):
@@ -1104,16 +1261,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         root = self.service.out_root
         runs = []
         if root.is_dir():
-            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-                dirnames[:] = sorted(d for d in dirnames
-                                     if not d.startswith(".") and not d.endswith(".gui")
-                                     and not (Path(dirpath) / d).is_symlink())
-                current = Path(dirpath)
-                if current == root or current.is_symlink():
-                    continue
-                if "summary.json" not in filenames or "states.npz" not in filenames:
-                    continue
-                if (current / "summary.json").is_symlink() or (current / "states.npz").is_symlink():
+            for current, rel, files, _ in walk_out(root):
+                if not is_run_dir(rel, files):
                     continue
                 status = None
                 with contextlib.suppress(OSError, ValueError):
@@ -1122,7 +1271,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 modified = None
                 with contextlib.suppress(OSError):
                     modified = (current / "summary.json").stat().st_mtime
-                runs.append({"runId": current.relative_to(root).as_posix(),
+                runs.append({"runId": "/".join(rel),
                              "path": str(current), "status": status, "modified": modified})
         # Most recent first (by summary.json mtime); ties and unreadable times fall back to runId.
         runs.sort(key=lambda run: run["runId"])
@@ -1264,23 +1413,70 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(403, "artifact is outside out/")
         if not _artifact_allowed(self.service, resolved.relative_to(root).parts):
             raise _HttpError(403, "artifact path is not served")
-        size = resolved.stat().st_size
         content_type = _CONTENT_TYPES.get(resolved.suffix.lower(), "application/octet-stream")
-        self._responded = True
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(size))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        if self.command == "HEAD":
-            return
         with open(resolved, "rb") as fh:
-            while True:
-                chunk = fh.read(ARTIFACT_CHUNK)
+            # One size for headers and body: a growing live poses.bin must not overrun it.
+            size = os.fstat(fh.fileno()).st_size
+            span = _byte_range(self.headers.get("Range"), size)
+            if span == "unsatisfiable":
+                raise _HttpError(416, "range not satisfiable",
+                                 _headers={"Content-Range": f"bytes */{size}"})
+            start, end = span if span is not None else (0, size - 1)
+            length = max(0, end - start + 1)
+            self._responded = True
+            self.send_response(206 if span is not None else 200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(length))
+            self.send_header("Accept-Ranges", "bytes")
+            if span is not None:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            fh.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = fh.read(min(ARTIFACT_CHUNK, remaining))
                 if not chunk:
                     break
                 self.wfile.write(chunk)
+                remaining -= len(chunk)
+
+    def _lives(self) -> None:
+        root = self.service.out_root
+        lives = []
+        if root.is_dir():
+            for current, rel, _, subdirs in walk_out(root):
+                for name in [name for name in subdirs if name.endswith(".live")]:
+                    subdirs.remove(name)
+                    live_json = current / name / "live.json"
+                    doc = _watch._read_live(live_json) if _regular_file(live_json) else None
+                    if doc is None:
+                        continue
+                    modified = None
+                    with contextlib.suppress(OSError):
+                        modified = live_json.stat().st_mtime
+                    frames = doc.get("frames")
+                    if isinstance(frames, bool) or not isinstance(frames, int):
+                        frames = None
+                    status = doc.get("status")
+                    lives.append({"liveId": "/".join(rel + (name[:-len(".live")],)),
+                                  "frames": frames, "done": doc.get("done") is True,
+                                  "status": status if isinstance(status, str) else None,
+                                  "mtime": modified})
+        # Most recent first (by live.json mtime); ties fall back to liveId.
+        lives.sort(key=lambda live: live["liveId"])
+        lives.sort(key=lambda live: live["mtime"] or 0.0, reverse=True)
+        self._send_json(200, {"lives": lives})
+
+    def _live(self, live_id: str) -> None:
+        live_json = _resolve_live_dir(self.service, live_id) / "live.json"
+        doc = _watch._read_live(live_json)
+        if doc is None:
+            raise _HttpError(404, f"unknown live run {live_id}")
+        self._send_json(200, doc)
 
     def _events(self) -> None:
         q = self.service.events.subscribe()
@@ -1409,6 +1605,24 @@ def _open_target(service: GuiService, doc) -> dict | None:
     return None
 
 
+def _follow_model(doc, *, required: bool) -> tuple[Project, str] | None:
+    """Validate a ``/v1/follow`` body ``{"model": "<project>/<model>"}`` like ``POST /v1/open``."""
+    if not isinstance(doc, dict):
+        raise _HttpError(400, "body must be a JSON object")
+    extra = set(doc) - {"model"}
+    if extra:
+        raise _HttpError(400, f"unexpected key(s): {', '.join(sorted(extra))}")
+    if "model" not in doc and not required:
+        return None
+    spec = doc.get("model")
+    if not isinstance(spec, str) or not spec:
+        raise _HttpError(400, "model must be a non-empty string")
+    project_name, _, model = spec.partition("/")
+    if not _SEGMENT.fullmatch(project_name) or not _SEGMENT.fullmatch(model):
+        raise _HttpError(404, f"unknown model {spec}")
+    return _resolve_or_404(spec), model
+
+
 def _open_error(exc: OpenRequestError) -> _HttpError:
     return _HttpError(exc.status, exc.message)
 
@@ -1439,8 +1653,7 @@ _INPUT_GLOBS = {
 }
 
 
-def _project_dir(project: Project) -> Path:
-    return Path(project.models.__file__).resolve().parent.parent
+_project_dir = _watch.project_dir
 
 
 def _physics_inputs(project: Project, repo_root: Path) -> dict[str, list[_InputFile]]:
@@ -1492,7 +1705,63 @@ def _artifact_allowed(service: GuiService, parts: tuple[str, ...]) -> bool:
     for part in parts[:-1]:
         if part.endswith(".gui") and part != ".gui":
             return True
+        if part.endswith(".live") and part != ".live":
+            return True
     return False
+
+
+def _byte_range(header: str | None, size: int):
+    """``(start, end)`` for a single ``Range: bytes=...`` header, ``None``, or ``"unsatisfiable"``.
+
+    Supports ``bytes=N-``, ``bytes=N-M`` and ``bytes=-N``; a missing, multi-range or malformed
+    header is ignored (``None``: serve the whole file), as RFC 9110 allows.
+    """
+    if not header:
+        return None
+    match = _RANGE.fullmatch(header.strip())
+    if match is None or match.group(1) == match.group(2) == "":
+        return None
+    first, last = match.groups()
+    if first == "":
+        suffix = int(last)
+        if suffix == 0 or size == 0:
+            return "unsatisfiable"
+        return max(0, size - suffix), size - 1
+    start = int(first)
+    if last != "" and int(last) < start:
+        return None
+    if start >= size:
+        return "unsatisfiable"
+    end = size - 1 if last == "" else min(int(last), size - 1)
+    return start, end
+
+
+def _regular_file(path: Path) -> bool:
+    try:
+        return path.is_file() and not path.is_symlink()
+    except OSError:
+        return False
+
+
+def _resolve_live_dir(service: GuiService, live_id: str) -> Path:
+    """The ``<liveId>.live`` dir under ``out/``: 403 for unsafe paths, 404 unless it is live."""
+    root = service.out_root.resolve()
+    parts = live_id.split("/")
+    if (not live_id or live_id.startswith("/") or "\\" in live_id or "\x00" in live_id
+            or any(part in ("", ".", "..") for part in parts)):
+        raise _HttpError(403, "forbidden live path")
+    candidate = service.out_root / f"{live_id}.live"
+    if candidate.is_symlink():
+        raise _HttpError(403, "live directory is a symlink")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise _HttpError(404, f"unknown live run {live_id}") from None
+    if not resolved.is_relative_to(root):
+        raise _HttpError(403, "live run is outside out/")
+    if not resolved.is_dir() or not _regular_file(resolved / "live.json"):
+        raise _HttpError(404, f"unknown live run {live_id}")
+    return resolved
 
 
 def _stamp() -> str:

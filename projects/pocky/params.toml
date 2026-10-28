@@ -15,6 +15,16 @@ capacity_test = 10  # packets in the current test; 25 is the second test (same m
 [separator]
 gap = 5.75  # trial value from the 5.5-6.0 range; must pass one packet but reject two compressed ones; adjustable by shims
 
+[syringe3]
+exit_gap = 7.8            # exit window height, 1.5x packet.height: passes one packet, and the wall still covers 2.6 mm of packet 2
+bore_length = 176.0       # syringe3 bore along X; the exit end stays at x=85 and the bore grows at the back for the 8 mm rear ramp (syringe keeps magazine.length_i)
+target_protrusion = 75.0  # presented packet's leading edge past the exit wall at full stroke (57 past the shelf), so it is easy to grab
+min_protrusion = 65.0     # smallest acceptable protrusion (sets stroke_min)
+min_past_shelf = 47.0     # the leading edge must clear the shelf end by this much (exit + 65 = shelf + 47)
+plate_z0 = 0.2            # pusher plate underside, above the floor top
+plate_h = 4.7             # pusher plate thickness; its top (4.9, the slider print face) stays 0.3 under packet 2's underside
+slot_h = 5.2              # rear wall slot height the plate runs in, 0.3 over the plate; also the rear ramp's underside
+
 [structure]
 min_wall = 2.4  # minimum printable wall thickness (checked by min_wall)
 

@@ -20,6 +20,10 @@ export const TRANSPORT_METHODS = [
   "getJob",
   "cancelJob",
   "getArtifact",
+  "follow",
+  "unfollow",
+  "listLive",
+  "getLive",
 ] as const;
 
 export type TransportMethod = (typeof TRANSPORT_METHODS)[number];
@@ -41,13 +45,15 @@ export interface StartRunBody {
 
 /** A validated call; models are split into their two segments. */
 export type ValidCall =
-  | { method: "health" | "listModels" | "listRuns" }
+  | { method: "health" | "listModels" | "listRuns" | "listLive" }
   | { method: "getScene" | "listPhysicsInputs"; project: string; model: string }
   | { method: "startBuild"; project: string; model: string; sets?: Record<string, number | string> }
   | { method: "getTrajectory"; runId: string }
   | { method: "startRun"; body: StartRunBody }
   | { method: "getJob" | "cancelJob"; id: string }
-  | { method: "getArtifact"; path: string };
+  | { method: "getArtifact"; path: string; offset?: number }
+  | { method: "follow" | "unfollow"; project: string; model: string }
+  | { method: "getLive"; liveId: string };
 
 export type WebviewMessage =
   | { kind: "request"; id: number; call: ValidCall }
@@ -81,11 +87,13 @@ export type Reply = { ok: true; result: unknown } | { ok: false; error: WireErro
 
 /** One service request: a fixed path built only from validated, percent-encoded segments. */
 export interface HttpRoute {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "DELETE";
   path: string;
   body?: Record<string, unknown>;
   /** The answer is raw bytes (an artifact), not a JSON document. */
   binary: boolean;
+  /** Extra request headers; the host adds the bearer token itself. */
+  headers?: Record<string, string>;
 }
 
 /** Status the host uses for a message it refused to forward. */
@@ -176,12 +184,35 @@ function jobIdArg(value: unknown): string {
   return value;
 }
 
+/** `{model}` for follow and unfollow: one `<project>/<model>` spec. */
+function followArg(value: unknown): { project: string; model: string } {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["model"])) throw new Invalid("request must be {model}");
+  return modelArg(value.model);
+}
+
+/** `{liveId}` for getLive: a relative path under `out/`, the same rule as a run id. */
+function liveIdArg(value: unknown): string {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["liveId"])) throw new Invalid("request must be {liveId}");
+  return pathArg(value.liveId, "liveId");
+}
+
+/** `{offset}` for getArtifact: a byte offset to resume from, sent as `Range: bytes=<offset>-`. */
+function offsetArg(value: unknown): number {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["offset"])) throw new Invalid("range must be {offset}");
+  const offset = value.offset;
+  if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) {
+    throw new Invalid("offset must be a non-negative integer");
+  }
+  return offset;
+}
+
 /** Check one call's arguments against its method; throws `Invalid` with the reason. */
 function validateCall(method: TransportMethod, args: unknown[]): ValidCall {
   switch (method) {
     case "health":
     case "listModels":
     case "listRuns":
+    case "listLive":
       requireArity(args, 0);
       return { method };
     case "getScene":
@@ -204,9 +235,19 @@ function validateCall(method: TransportMethod, args: unknown[]): ValidCall {
     case "cancelJob":
       requireArity(args, 1);
       return { method, id: jobIdArg(args[0]) };
-    case "getArtifact":
+    case "getArtifact": {
+      requireArity(args, 1, 2);
+      const call: Extract<ValidCall, { method: "getArtifact" }> = { method, path: pathArg(args[0], "artifact path") };
+      if (args.length === 2) call.offset = offsetArg(args[1]);
+      return call;
+    }
+    case "follow":
+    case "unfollow":
       requireArity(args, 1);
-      return { method, path: pathArg(args[0], "artifact path") };
+      return { method, ...followArg(args[0]) };
+    case "getLive":
+      requireArity(args, 1);
+      return { method, liveId: liveIdArg(args[0]) };
   }
 }
 
@@ -281,7 +322,7 @@ export function encodePath(path: string): string {
 
 /** The single documented endpoint for a validated call. */
 export function routeFor(call: ValidCall): HttpRoute {
-  const json = (method: "GET" | "POST", path: string, body?: Record<string, unknown>): HttpRoute =>
+  const json = (method: HttpRoute["method"], path: string, body?: Record<string, unknown>): HttpRoute =>
     body === undefined ? { method, path, binary: false } : { method, path, body, binary: false };
   switch (call.method) {
     case "health":
@@ -308,8 +349,19 @@ export function routeFor(call: ValidCall): HttpRoute {
       return json("GET", `/v1/jobs/${encodeURIComponent(call.id)}`);
     case "cancelJob":
       return json("POST", `/v1/jobs/${encodeURIComponent(call.id)}/cancel`);
-    case "getArtifact":
-      return { method: "GET", path: `/v1/artifacts/${encodePath(call.path)}`, binary: true };
+    case "getArtifact": {
+      const path = `/v1/artifacts/${encodePath(call.path)}`;
+      if (call.offset === undefined) return { method: "GET", path, binary: true };
+      return { method: "GET", path, binary: true, headers: { Range: `bytes=${call.offset}-` } };
+    }
+    case "follow":
+      return json("POST", "/v1/follow", { model: `${call.project}/${call.model}` });
+    case "unfollow":
+      return json("DELETE", "/v1/follow", { model: `${call.project}/${call.model}` });
+    case "listLive":
+      return json("GET", "/v1/live");
+    case "getLive":
+      return json("GET", `/v1/live/${encodePath(call.liveId)}`);
   }
 }
 
@@ -332,11 +384,19 @@ export function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 /**
  * Map a service answer the way `BrowserTransport` does: a non-2xx status becomes
  * `{status, message: body.error ?? statusText ?? "HTTP <status>", body}`; a JSON route must
- * answer with a JSON object; a binary route answers with an ArrayBuffer.
+ * answer with a JSON object; a binary route answers with an ArrayBuffer. `ranged` marks a
+ * request with a `Range` header, for which a 416 means "nothing past that offset": empty bytes.
  */
-export function mapHttpResponse(status: number, statusText: string, bytes: Uint8Array, binary: boolean): Reply {
+export function mapHttpResponse(
+  status: number,
+  statusText: string,
+  bytes: Uint8Array,
+  binary: boolean,
+  ranged = false,
+): Reply {
   const ok = status >= 200 && status < 300;
   if (ok && binary) return { ok: true, result: exactArrayBuffer(bytes) };
+  if (status === 416 && binary && ranged) return { ok: true, result: new ArrayBuffer(0) };
   const body = parseJson(new TextDecoder().decode(bytes));
   if (!ok) {
     const detail = isRecord(body) && typeof body.error === "string" ? body.error : null;

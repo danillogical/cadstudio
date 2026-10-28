@@ -378,3 +378,64 @@ describe("default deps against a real loopback service", () => {
     }
   });
 });
+
+describe("panel never steals focus", () => {
+  it("creates the panel with show options {preserveFocus: true}", () => {
+    harness();
+    open();
+    const showOptions = fake.window.createWebviewPanel.mock.calls[0][2] as { preserveFocus?: boolean };
+    expect(showOptions.preserveFocus).toBe(true);
+  });
+
+  it("keeps retainContextWhenHidden on the new panel", () => {
+    harness();
+    open();
+    const options = fake.window.createWebviewPanel.mock.calls[0][3] as { retainContextWhenHidden?: boolean };
+    expect(options.retainContextWhenHidden).toBe(true);
+  });
+
+  it("keeps retainContextWhenHidden on a restored panel", () => {
+    harness();
+    const revived = fake.makePanel("cadstudio.gui", "CADStudio");
+    serializer().deserializeWebviewPanel(revived, undefined);
+    expect((revived.webview.options as { retainContextWhenHidden?: boolean }).retainContextWhenHidden).toBe(true);
+  });
+
+  it("passes preserveFocus = true on every reveal of the open panel", () => {
+    harness();
+    open();
+    open();
+    open();
+    const reveal = fake.createdPanels[0].reveal;
+    expect(reveal).toHaveBeenCalledTimes(2);
+    for (const args of reveal.mock.calls) expect(args[1]).toBe(true);
+  });
+
+  it("passes preserveFocus = true when a URI request reveals the existing panel", async () => {
+    harness();
+    open();
+    await fake.commands.executeCommand("cadstudio.openGui", "x=1");
+    const reveal = fake.createdPanels[0].reveal;
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(reveal.mock.calls[0][1]).toBe(true);
+  });
+
+  it("passes preserveFocus = true when opening after a panel was restored", () => {
+    harness();
+    const revived = fake.makePanel("cadstudio.gui", "CADStudio");
+    serializer().deserializeWebviewPanel(revived, undefined);
+    open();
+    expect(revived.reveal).toHaveBeenCalledTimes(1);
+    expect(revived.reveal.mock.calls[0][1]).toBe(true);
+  });
+
+  it("passes preserveFocus = true when a second restored panel is closed in favour of the open one", () => {
+    harness();
+    open();
+    const revived = fake.makePanel("cadstudio.gui", "CADStudio");
+    serializer().deserializeWebviewPanel(revived, undefined);
+    const reveal = fake.createdPanels[0].reveal;
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(reveal.mock.calls[0][1]).toBe(true);
+  });
+});

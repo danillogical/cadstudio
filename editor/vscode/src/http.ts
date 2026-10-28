@@ -44,7 +44,12 @@ function failure(error: unknown): HttpFailure {
 export function serviceRequest(endpoint: Endpoint, route: HttpRoute, signal?: AbortSignal): Promise<HttpAnswer> {
   return new Promise((resolve, reject) => {
     const body = route.body === undefined ? undefined : Buffer.from(JSON.stringify(route.body), "utf8");
+    // Drop any route-supplied authorization header, whatever its case, so the token always wins.
+    const routeHeaders = Object.fromEntries(
+      Object.entries(route.headers ?? {}).filter(([name]) => name.toLowerCase() !== "authorization"),
+    );
     const headers: Record<string, string> = {
+      ...routeHeaders,
       Authorization: `Bearer ${endpoint.token}`,
       Accept: route.binary ? "*/*" : "application/json",
     };

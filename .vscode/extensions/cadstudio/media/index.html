@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CADStudio</title>
-    <script type="module" crossorigin src="./assets/index-BA_Aj6EA.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CmAhcwYA.css">
+    <script type="module" crossorigin src="./assets/index-BAhbV3ZZ.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Bc2vuz44.css">
   </head>
   <body>
     <div id="app">
@@ -16,6 +16,12 @@
           <section class="panel picker-panel">
             <label for="model-picker">Model</label>
             <select id="model-picker"></select>
+            <div class="follow-row">
+              <label class="check" title="Rebuild on source edits and play simulations as they run">
+                <input id="follow" type="checkbox" checked /> Follow
+              </label>
+              <span id="follow-status" class="note" role="status"></span>
+            </div>
           </section>
           <section class="panel jobs-panel">
             <h2>Jobs</h2>
@@ -57,6 +63,7 @@
               <button id="show-model" type="button" aria-pressed="true">Model</button>
               <button id="show-run" type="button" aria-pressed="false" disabled>Run</button>
             </div>
+            <span id="live-badge" class="live-badge" role="status" hidden></span>
             <button id="fit" type="button" title="Fit the model in view (F)">Fit</button>
           </div>
           <section id="playback" class="panel playback-panel" hidden>

@@ -3,8 +3,9 @@
 The runner is deliberately independent of any product project. A scenario selects a
 registered analytic fixture, declares the only positions that may be written (reset), then
 advances the compiled MuJoCo model. After reset, motion comes only from actuator force,
-spring/damping, contact and gravity: nothing here writes ``qpos`` or script-corrects an
-outcome.
+spring/damping, contact, gravity and declared ``body_force``: nothing here writes ``qpos`` or
+script-corrects an outcome. The one exception is a declared ``remove_body``, which parks a
+free body off-scene for the rest of the run (see ``cadkit/physics/telemetry.py``).
 
 Budgets are preflighted from the **total rounded** phase plan before export or stepping. A
 run gets its own directory, is never overwritten, and preserves partial evidence when it was
@@ -714,7 +715,8 @@ def _execute(mujoco, model, data, spec, scenario: ScenarioSpec, plan: RunPlan,
         recorder.begin_phase(progress, ctrl, bounded,
                              command_at=_ramp_command(spec, planned.phase, planned.steps),
                              force_at=body_force_command(mujoco, model, planned.phase,
-                                                         planned.steps))
+                                                         planned.steps, data),
+                             remove_body=planned.phase.remove_body)
         recorder.step(planned.steps)
         recorder.end_phase()
         if recorder.telemetry.stopped:
@@ -916,7 +918,7 @@ def run_assembly(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
                  acceptance_text: str | None = None,
                  fixture_label: str | None = None,
                  options_text: str | None = None,
-                 require_scenario_timestep: bool = False) -> dict:
+                 require_scenario_timestep: bool = False, live=None) -> dict:
     """Public typed execution API: run an ``AssemblySpec`` without the fixture registry.
 
     M5 project adapters can build their own assembly and reuse the same generic runner,
@@ -928,6 +930,8 @@ def run_assembly(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
     SHA256 joins the run identity; ``None`` leaves the evidence exactly as before.
     ``require_scenario_timestep`` rejects a scenario whose ``timestep_s`` is absent or
     differs from the spec's, for project runs where the spec supplies the timestep.
+    ``live`` is an optional :class:`cadkit.physics.live.LiveWriter` that streams poses to the
+    run's ``.live`` sidecar; it only observes, and never changes the run or its evidence.
     """
     spec.validate()
     if require_scenario_timestep:
@@ -950,13 +954,14 @@ def run_assembly(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
     return _run_with_spec(spec, scenario, acceptance, outdir, scenario_text=scenario_text,
                           acceptance_text=acceptance_text,
                           fixture_label=fixture_label or spec.name,
-                          options_text=options_text, options=options)
+                          options_text=options_text, options=options, live=live)
 
 
 def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
                    outdir: Path | None, *, scenario_text: str | None,
                    acceptance_text: str | None, fixture_label: str,
-                   options_text: str | None = None, options: dict | None = None) -> dict:
+                   options_text: str | None = None, options: dict | None = None,
+                   live=None) -> dict:
     resolve_references(scenario, acceptance, spec)
     plan = preflight(scenario, spec)
     _require_supported_integrator(spec)
@@ -978,6 +983,24 @@ def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
         ) from exc
     run_dir, run_id = _claim_run_dir(scenario, outdir)
     started = time.perf_counter()
+    if live is not None:
+        live.open(run_dir)
+    try:
+        summary = _run_claimed(spec, scenario, acceptance, plan, run_dir, run_id, started,
+                               scenario_text, acceptance_text, fixture_label, options_text,
+                               options, live)
+    except BaseException:
+        if live is not None:
+            live.finish(None)
+        raise
+    if live is not None:
+        live.finish(summary)
+    return summary
+
+
+def _run_claimed(spec, scenario, acceptance, plan, run_dir, run_id, started, scenario_text,
+                 acceptance_text, fixture_label, options_text, options, live) -> dict:
+    """Everything after the run dir is claimed; failures become an ERROR run, never a raise."""
     stage = "export"
     recorder = None
     try:
@@ -1021,6 +1044,10 @@ def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
             "estimate_kind": "uncompressed payload of archived arrays, not peak Python memory",
         }
         data = mujoco.MjData(model)
+        if live is not None:
+            # Before seeding, so mesh conversion can never touch the run's random state.
+            live.attach(mujoco, model, planned_s=sum(
+                int(planned.steps) for planned in plan.phases[1:]) * float(spec.timestep_s))
         stage = "reset"
         random.seed(scenario.seed)
         np.random.seed(scenario.seed)
@@ -1037,6 +1064,8 @@ def _run_with_spec(spec, scenario: ScenarioSpec, acceptance: AcceptanceSpec,
             events=acceptance.events,
             checks=acceptance.checks,
             gravity_m_s2=tuple(spec.gravity_m_s2),
+            observer=live.observe if live is not None else None,
+            removal_observer=getattr(live, "removed", None),
         )
         telemetry = _execute(mujoco, model, data, spec, scenario, plan, recorder,
                              acceptance)

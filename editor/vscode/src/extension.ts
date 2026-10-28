@@ -84,7 +84,7 @@ export class GuiPanels {
   open(): vscode.WebviewPanel | undefined {
     if (this.refused()) return undefined;
     if (this.panel) {
-      this.panel.reveal();
+      this.panel.reveal(this.panel.viewColumn, true);
       return this.panel;
     }
     const index = this.readIndex();
@@ -92,7 +92,7 @@ export class GuiPanels {
     const panel = vscode.window.createWebviewPanel(
       VIEW_TYPE,
       "CADStudio",
-      vscode.ViewColumn.Active,
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
       panelOptions(this.context.extensionUri),
     );
     this.attach(panel, index);
@@ -107,7 +107,7 @@ export class GuiPanels {
     }
     if (this.panel && this.panel !== panel) {
       panel.dispose();
-      this.panel.reveal();
+      this.panel.reveal(this.panel.viewColumn, true);
       return;
     }
     const index = this.readIndex();

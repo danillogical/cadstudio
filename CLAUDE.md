@@ -15,12 +15,14 @@ Projects:
 
 - `uv sync` installs the environment.
 - `uv run cad list [--json]` lists models as `<project>/<model>` (every `projects/<project>/models/*.py` not starting with `_`), e.g. `armor/armor_industrial`.
-- `uv run cad build <model> [--part NAME] [--render] [--check] [--views standard|detail|sections|all] [--set KEY=VAL ...] [--params PATH] [--out DIR] [--json]` exports STEP, STL and 3MF, then optionally renders and checks.
+- `uv run cad build <model> [--part NAME] [--render] [--check] [--scene] [--views standard|detail|sections|all] [--set KEY=VAL ...] [--params PATH] [--out DIR] [--json]` exports STEP, STL and 3MF, then optionally renders and checks. `--scene` also writes `out/<project>/<model>/scene/`, and is skipped if a check FAILs.
 - `uv run cad render <model> [--views ...]` renders only.
 - `uv run cad check <model> [--set ...]` runs checks only. Exit code is 1 if any check FAILs.
 - `uv run cad gui scene <model> [--set ...] [--params P] [--out DIR] [--json]` writes `out/<project>/<model>/scene/` (`scene.json` and `parts/<id>.glb` in assembly coordinates, in mm).
 - `uv run --frozen --extra physics cad gui trajectory RUN_DIR [--fps N] [--contacts] [--json]` writes `<run-name>.gui/` next to the run (`trajectory.json`, `poses.bin`, `meshes/*.glb`, optional `contacts.bin`, in mm). It never writes into the run dir.
 - `uv run --frozen --extra physics cad gui serve [--port 0] [--no-browser] [--json]` starts the loopback GUI service and writes `out/.gui/service.json`.
+- `uv run --frozen --extra physics cad physics run <model> --scenario S --acceptance A [--options F] [--params P] [--set KEY=VAL ...] [--out DIR] [--no-live] [--live-fps N]` writes the run dir and, unless `--no-live`, a sibling `<run-name>.live/` that streams poses while the run steps (`--live-fps` sets its sample rate, default 30).
+- The GUI service follows external builds and runs: a followed model rebuilds on source edits, and new scenes and runs appear in the open panel (see "Live monitoring" in `README.md`).
 - `uv run cad doctor [--json]` reports Python, uv, build123d, MuJoCo, node/npm, the output dir and the UI/extension builds.
 - `uv run pytest tests -q` runs the test suite (about 3.5 minutes).
 
