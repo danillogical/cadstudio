@@ -16,24 +16,15 @@ import pytest
 
 from cadkit.gui import server
 from cadkit.params import REPO_ROOT
+from physics_workspace import ACCEPTANCE, SCENARIO, make_physics_workspace, workspace_env
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
 
 
 def _env() -> dict:
-    env = {k: v for k, v in os.environ.items() if k != "POCKY_POSE"}
+    env = dict(os.environ)
     env["PATH"] = f"{Path.home() / '.local' / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     return env
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _no_pose_env():
-    saved = os.environ.pop("POCKY_POSE", None)
-    try:
-        yield
-    finally:
-        if saved is not None:
-            os.environ["POCKY_POSE"] = saved
 
 
 @pytest.fixture(scope="module")
@@ -82,7 +73,7 @@ def wait_job(svc, job_id, timeout=300):
     raise AssertionError(f"job {job_id} did not finish in {timeout}s")
 
 
-def build(svc, spec="pocky/packet_dummy", body=None):
+def build(svc, spec="starter/box", body=None):
     status, doc, _ = req_json(svc, "POST", f"/v1/models/{spec}/build", body=body)
     assert status == 202, doc
     return doc["job"]
@@ -109,9 +100,9 @@ def test_requires_token(svc):
     assert status == 401
     status, doc, _ = req_json(svc, "GET", f"/v1/models?token={svc.token}", token=False)
     assert status == 200
-    assert "pocky/packet_dummy" in doc["models"]
+    assert "starter/box" in doc["models"]
     projects = {p["name"]: p for p in doc["projects"]}
-    assert projects["pocky"]["params_path"].endswith("params.toml")
+    assert projects["starter"]["params_path"].endswith("params.toml")
 
 
 def test_bad_host_or_origin(svc):
@@ -133,7 +124,8 @@ def test_bad_host_or_origin(svc):
 
 
 def test_root_fallback_page_without_ui_dist(tmp_path):
-    service = server.GuiService(repo_root=tmp_path, out_root=tmp_path / "out", port=0, quiet=True)
+    service = server.GuiService(repo_root=tmp_path, out_root=tmp_path / "out",
+                                ui_dist=tmp_path / "ui" / "dist", port=0, quiet=True)
     service.start()
     try:
         status, payload, headers = req(service, "GET", "/", token=False)
@@ -151,7 +143,8 @@ def test_serves_ui_dist_when_present(tmp_path):
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text("<html>app</html>")
     (dist / "assets" / "app.js").write_text("console.log(1)")
-    service = server.GuiService(repo_root=tmp_path, out_root=tmp_path / "out", port=0, quiet=True)
+    service = server.GuiService(repo_root=tmp_path, out_root=tmp_path / "out",
+                                ui_dist=tmp_path / "ui" / "dist", port=0, quiet=True)
     service.start()
     try:
         status, payload, headers = req(service, "GET", "/", token=False)
@@ -184,19 +177,19 @@ def test_wrong_method_405(svc):
 
 
 def test_unknown_model_404(svc):
-    for method, path in (("GET", "/v1/models/pocky/nope/scene"),
+    for method, path in (("GET", "/v1/models/starter/nope/scene"),
                          ("GET", "/v1/models/nope/x/scene"),
-                         ("POST", "/v1/models/pocky/nope/build")):
+                         ("POST", "/v1/models/starter/nope/build")):
         status, doc, _ = req_json(svc, method, path, body={} if method == "POST" else None)
         assert status == 404, (path, doc)
         assert "error" in doc
-    status, doc, _ = req_json(svc, "GET", "/v1/models/armor/armor_proto/scene")
+    status, doc, _ = req_json(svc, "GET", "/v1/models/starter/hinge/scene")
     assert status == 404
-    assert doc["command"] == "cad gui scene armor/armor_proto"
+    assert doc["command"] == "cad gui scene starter/hinge"
 
 
 def test_artifact_path_traversal(svc, tmp_path):
-    scene_dir = svc.out_root / "pocky" / "packet_dummy" / "scene"
+    scene_dir = svc.out_root / "starter" / "box" / "scene"
     scene_dir.mkdir(parents=True, exist_ok=True)
     (scene_dir / "scene.json").write_text("{}")
     outside = tmp_path / "secret.json"
@@ -205,7 +198,7 @@ def test_artifact_path_traversal(svc, tmp_path):
                  "/v1/artifacts/%2E%2E/x",
                  "/v1/artifacts//etc/passwd",
                  "/v1/artifacts/%2Fetc%2Fpasswd",
-                 "/v1/artifacts/pocky%5Cpacket_dummy%5Cscene%5Cscene.json"):
+                 "/v1/artifacts/starter%5Cbox%5Cscene%5Cscene.json"):
         status, doc, _ = req_json(svc, "GET", path)
         assert status == 403, (path, doc)
     status, _, _ = req_json(svc, "GET", "/v1/artifacts/.gui/service.json")
@@ -216,25 +209,25 @@ def test_artifact_path_traversal(svc, tmp_path):
         link.unlink()
     link.symlink_to(outside)
     try:
-        status, _, _ = req_json(svc, "GET", "/v1/artifacts/pocky/packet_dummy/scene/evil.json")
+        status, _, _ = req_json(svc, "GET", "/v1/artifacts/starter/box/scene/evil.json")
         assert status == 403
     finally:
         link.unlink()
 
-    scene_link = svc.out_root / "pocky" / "link_scene" / "scene"
+    scene_link = svc.out_root / "starter" / "link_scene" / "scene"
     scene_link.parent.mkdir(parents=True, exist_ok=True)
     if scene_link.exists() or scene_link.is_symlink():
         scene_link.unlink()
     scene_link.symlink_to(tmp_path)
     try:
-        status, _, _ = req_json(svc, "GET", "/v1/artifacts/pocky/link_scene/scene/secret.json")
+        status, _, _ = req_json(svc, "GET", "/v1/artifacts/starter/link_scene/scene/secret.json")
         assert status == 403
     finally:
         scene_link.unlink()
 
-    report = svc.out_root / "pocky" / "packet_dummy" / "report.json"
+    report = svc.out_root / "starter" / "box" / "report.json"
     report.write_text("{}")
-    status, _, _ = req_json(svc, "GET", "/v1/artifacts/pocky/packet_dummy/report.json")
+    status, _, _ = req_json(svc, "GET", "/v1/artifacts/starter/box/report.json")
     assert status == 403
 
 
@@ -242,15 +235,15 @@ def test_build_job_serves_scene(svc):
     job = build(svc)
     finished = wait_job(svc, job["id"])
     assert finished["status"] == "succeeded", finished["error"]
-    status, doc, _ = req_json(svc, "GET", "/v1/models/pocky/packet_dummy/scene")
+    status, doc, _ = req_json(svc, "GET", "/v1/models/starter/box/scene")
     assert status == 200, doc
     assert doc["stale"] is False
     assert doc["error"] is None
     assert doc["job"] == job["id"]
-    assert doc["artifactBase"] == "pocky/packet_dummy/scene"
-    assert doc["scene"]["parts"][0]["id"] == "dummy"
+    assert doc["artifactBase"] == "starter/box/scene"
+    assert doc["scene"]["parts"][0]["id"] == "tray"
     status, payload, headers = req(svc, "GET",
-                                   "/v1/artifacts/pocky/packet_dummy/scene/parts/dummy.glb")
+                                   "/v1/artifacts/starter/box/scene/parts/tray.glb")
     assert status == 200
     assert payload.startswith(b"glTF")
     assert headers["Content-Type"] == "model/gltf-binary"
@@ -314,17 +307,17 @@ def test_cancel_rules(svc, monkeypatch):
 
 
 def test_failed_build_keeps_scene_stale(svc):
-    status, before, _ = req_json(svc, "GET", "/v1/models/pocky/packet_dummy/scene")
+    status, before, _ = req_json(svc, "GET", "/v1/models/starter/box/scene")
     if status != 200:
         job = build(svc)
         assert wait_job(svc, job["id"])["status"] == "succeeded"
-        status, before, _ = req_json(svc, "GET", "/v1/models/pocky/packet_dummy/scene")
+        status, before, _ = req_json(svc, "GET", "/v1/models/starter/box/scene")
     assert status == 200
     job = build(svc, body={"set": {"nope.key": 1}})
     failed = wait_job(svc, job["id"])
     assert failed["status"] == "failed"
     assert "unknown parameter" in failed["error"]
-    status, after, _ = req_json(svc, "GET", "/v1/models/pocky/packet_dummy/scene")
+    status, after, _ = req_json(svc, "GET", "/v1/models/starter/box/scene")
     assert status == 200
     assert after["stale"] is True
     assert after["error"] == failed["error"]
@@ -451,19 +444,32 @@ class _PortOnly:
         self.token = ""
 
 
-def test_run_job_paths_and_cancel(svc, monkeypatch):
+@pytest.fixture
+def phys_svc(tmp_path):
+    """A service over a workspace whose ``rig`` project has physics input files."""
+    ws = make_physics_workspace(tmp_path)
+    with workspace_env(ws):
+        service = server.GuiService(repo_root=ws, out_root=tmp_path / "out", port=0, quiet=True,
+                                    watch=False)
+        service.start()
+        try:
+            yield service
+        finally:
+            service.close()
+
+
+def test_run_job_paths_and_cancel(phys_svc, monkeypatch):
+    svc = phys_svc
     for bad, expected in (({"scenario": "../../etc/passwd"}, 403),
                           ({"scenario": "/etc/passwd"}, 403),
                           ({"scenario": "physics/scenarios/nope.json"}, 400)):
-        body = {"model": "pocky/syringe", "acceptance": "physics/syringe_two_cycle_acceptance.json",
-                **bad}
+        body = {"model": "rig/box", "acceptance": ACCEPTANCE, **bad}
         status, doc, _ = req_json(svc, "POST", "/v1/runs", body=body)
         assert status == expected, (body, status, doc)
 
     monkeypatch.setattr(server, "_physics_command",
                         lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"])
-    body = {"model": "pocky/syringe", "scenario": "physics/scenarios/syringe_two_cycle.json",
-            "acceptance": "physics/syringe_two_cycle_acceptance.json"}
+    body = {"model": "rig/box", "scenario": SCENARIO, "acceptance": ACCEPTANCE}
     status, doc, _ = req_json(svc, "POST", "/v1/runs", body=body)
     assert status == 202, doc
     job = doc["job"]
@@ -492,7 +498,7 @@ def test_physics_cancel_before_subprocess_starts(svc, monkeypatch):
         calls.append(args)
         return real_popen(*args, **kwargs)
 
-    job = server.Job(kind="run", key="pocky/syringe", model="pocky/syringe")
+    job = server.Job(kind="run", key="starter/box", model="starter/box")
     job._cancel.set()
     monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
     server._run_physics(svc, job, [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -503,7 +509,7 @@ def test_physics_cancel_before_subprocess_starts(svc, monkeypatch):
 
 def test_physics_cancel_during_popen_kills_the_process(svc, monkeypatch):
     real_popen = subprocess.Popen
-    job = server.Job(kind="run", key="pocky/syringe", model="pocky/syringe")
+    job = server.Job(kind="run", key="starter/box", model="starter/box")
     job.status = "running"
 
     def fake_popen(*args, **kwargs):

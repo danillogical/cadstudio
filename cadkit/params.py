@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeVar
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from .workspace import ENGINE_ROOT
+
+# The engine checkout, never the user's workspace; workspace paths come from cadkit.workspace.
+REPO_ROOT = ENGINE_ROOT
 
 T = TypeVar("T")
 

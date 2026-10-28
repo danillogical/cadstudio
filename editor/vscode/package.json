@@ -47,11 +47,13 @@
   },
   "scripts": {
     "build": "node build.mjs",
+    "package": "node build.mjs --outdir vsix-stage && cd vsix-stage && ../node_modules/.bin/vsce package --no-dependencies --skip-license --allow-missing-repository --out ../cadstudio.vsix",
     "test": "tsc --noEmit && vitest run"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/vscode": "1.89.0",
+    "@vscode/vsce": "4.1.0",
     "esbuild": "0.28.2",
     "typescript": "5.9.3",
     "vitest": "4.1.12"

@@ -1,15 +1,15 @@
-"""Shared fixtures and helpers for the cadkit test suite."""
+"""Shared fixtures and helpers for the cadkit test suite (engine tests use the starter project)."""
 from pathlib import Path
 
 import pytest
 from build123d import Align, Box, Pos
 
-from projects.armor.params import load_params
-from projects.armor.part import ArmorPart
+from projects.starter.params import load_params
+from projects.starter.part import StarterPart
 
 MINZ = (Align.CENTER, Align.CENTER, Align.MIN)
-# cadkit unit tests use frozen 14" params; model tests use the live projects/armor/params.toml.
-FIXTURE_PARAMS = Path(__file__).parent / "fixtures" / "lid_14in.toml"
+# Engine tests use frozen starter params, so edits to projects/starter/params.toml cannot move them.
+FIXTURE_PARAMS = Path(__file__).parent / "fixtures" / "starter.toml"
 
 
 def box(x0, x1, y0, y1, z0, z1):
@@ -18,7 +18,7 @@ def box(x0, x1, y0, y1, z0, z1):
 
 
 def part(shape, **kw):
-    return ArmorPart(shape, **kw)
+    return StarterPart(shape, **kw)
 
 
 @pytest.fixture(scope="session")

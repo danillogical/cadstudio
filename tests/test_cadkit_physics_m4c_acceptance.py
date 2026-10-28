@@ -1,13 +1,11 @@
-"""M4c acceptance schema, frozen Pocky configuration and reference validation."""
+"""M4c acceptance schema and reference validation."""
 from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
 
 import pytest
 
-from cadkit.params import REPO_ROOT
 from cadkit.physics.evaluate import resolve_references
 from cadkit.physics.scenario import (
     BudgetSpec,
@@ -16,70 +14,9 @@ from cadkit.physics.scenario import (
     ScenarioSpec,
     acceptance_from_text,
     acceptance_from_toml_text,
-    acceptance_text_matches,
     build_fixture,
     canonical_json,
-    load_acceptance_toml,
 )
-
-POCKY_ACCEPTANCE = REPO_ROOT / "projects" / "pocky" / "physics" / "acceptance.toml"
-POCKY_SEMANTIC_HASH = "5109a0a4cb5ed70c3605ac9b1148eda58cae0a05ba18725807d645e474d216d3"
-
-
-def test_pocky_acceptance_toml_is_frozen_provisional_and_complete():
-    acceptance = load_acceptance_toml(POCKY_ACCEPTANCE)
-    assert acceptance.acceptance_id == "pocky_provisional_m4c"
-    assert acceptance.hash() == POCKY_SEMANTIC_HASH
-    notes = acceptance.notes
-    assert "NOT bench measurements" in notes
-    assert "165 x 55 x 5.2" in notes
-    assert "housing stability" in notes
-    assert "0.2 mm" in notes
-    assert "candidate identity set" in notes
-    assert "undeclared body ID" in notes
-    events = {event.name: event for event in acceptance.events}
-    exit_event = events["packet_exit"]
-    presentation = events["packet_presentation"]
-    assert exit_event.kind == "exit_crossing"
-    assert exit_event.bodies == ("packet",)
-    assert exit_event.plane.point_m == (0.088, 0.0, 0.0)
-    assert exit_event.plane.normal == (1.0, 0.0, 0.0)
-    assert exit_event.plane.direction == 1
-    assert presentation.kind == "supported_presentation"
-    assert presentation.bodies == ("packet",)
-    assert presentation.access_plane.point_m == (0.106, 0.0, 0.0)
-    assert presentation.object_half_extents_m == (0.0825, 0.0275, 0.0026)
-    assert presentation.min_protrusion_m == 0.030
-    assert presentation.target_protrusion_m == 0.040
-    assert presentation.min_accessible_m == 0.010
-    assert presentation.min_accessible_m != 0.015  # superseded architecture §16 proposal
-    assert presentation.dwell_min_s == 0.5
-    assert presentation.protrusion_change_max_m == 0.001
-    assert presentation.support_bodies == ("lip", "body")
-    assert presentation.min_support_load_fraction == 0.6
-    assert presentation.max_terminal_speed_m_s == 0.01
-    assert presentation.fallout_drop_m == 0.02
-    assert presentation.release_phase == "release"
-    assert presentation.window_from == "actuate"
-    assert presentation.window_to == "hold"
-    checks = {check.name: check for check in acceptance.checks}
-    assert checks["exactly_one_packet"].kind == "event_count"
-    assert checks["exactly_one_packet"].event == "packet_exit"
-    assert checks["exactly_one_packet"].expected == 1
-    assert checks["exactly_one_packet"].tolerance == 0
-    assert checks["pickup_ready"].kind == "event_verdict"
-    assert checks["pickup_ready"].event == "packet_presentation"
-
-
-def test_toml_source_forces_a_canonical_json_lock_and_keeps_the_same_hash():
-    acceptance = load_acceptance_toml(POCKY_ACCEPTANCE)
-    assert acceptance_text_matches(acceptance, acceptance.source_text) is False
-    canonical = canonical_json(acceptance.to_dict())
-    assert acceptance_text_matches(acceptance, canonical) is True
-    reparsed = acceptance_from_text(canonical)
-    assert reparsed.hash() == acceptance.hash()
-    assert reparsed.events[1].min_protrusion_m == 0.030
-    assert reparsed.notes == acceptance.notes
 
 
 def test_toml_loader_rejects_unknown_fields_duplicate_events_and_nonfinite_numbers():

@@ -11,21 +11,26 @@ from pathlib import Path
 import pytest
 
 from cadkit.gui import server
-from cadkit.params import REPO_ROOT
+from physics_workspace import ACCEPTANCE, NOT_LISTED, OPTIONS, PY_FILE, SCENARIO, make_physics_workspace, workspace_env
 
-POCKY = REPO_ROOT / "projects" / "pocky"
-INPUTS = "/v1/models/pocky/syringe/physics-inputs"
+INPUTS = "/v1/models/rig/box/physics-inputs"
 
 
 @pytest.fixture(scope="module")
-def svc(tmp_path_factory):
-    service = server.GuiService(out_root=tmp_path_factory.mktemp("gui_inputs_out"), port=0,
-                                quiet=True)
-    service.start()
-    try:
-        yield service
-    finally:
-        service.close()
+def ws(tmp_path_factory):
+    return make_physics_workspace(tmp_path_factory.mktemp("gui_inputs_ws"))
+
+
+@pytest.fixture(scope="module")
+def svc(ws, tmp_path_factory):
+    with workspace_env(ws):
+        service = server.GuiService(repo_root=ws, out_root=tmp_path_factory.mktemp("gui_inputs_out"),
+                                    port=0, quiet=True)
+        service.start()
+        try:
+            yield service
+        finally:
+            service.close()
 
 
 def req_json(svc, method, path, *, token=True, body=None):
@@ -44,19 +49,19 @@ def req_json(svc, method, path, *, token=True, body=None):
         conn.close()
 
 
-def expected(subdir: str, pattern: str) -> list[str]:
-    return sorted(p.relative_to(REPO_ROOT).as_posix() for p in (POCKY / subdir).glob(pattern)
+def expected(ws: Path, subdir: str, pattern: str) -> list[str]:
+    return sorted(p.relative_to(ws).as_posix() for p in (ws / "projects" / "rig" / subdir).glob(pattern)
                   if p.is_file() and not p.is_symlink())
 
 
-def test_listing_matches_project_files(svc):
+def test_listing_matches_project_files(svc, ws):
     status, doc = req_json(svc, "GET", INPUTS)
     assert status == 200, doc
     assert doc["schemaVersion"] == 1
-    assert (doc["project"], doc["model"]) == ("pocky", "syringe")
-    want = {"scenarios": expected("physics/scenarios", "*.json"),
-            "acceptance": expected("physics", "*_acceptance.json"),
-            "options": expected("physics/options", "*.toml")}
+    assert (doc["project"], doc["model"]) == ("rig", "box")
+    want = {"scenarios": expected(ws, "physics/scenarios", "*.json"),
+            "acceptance": expected(ws, "physics", "*_acceptance.json"),
+            "options": expected(ws, "physics/options", "*.toml")}
     for key, paths in want.items():
         assert paths, key
         assert [entry["path"] for entry in doc[key]] == paths
@@ -64,13 +69,14 @@ def test_listing_matches_project_files(svc):
             assert set(entry) == {"name", "path"}
             assert not Path(entry["path"]).is_absolute()
             assert entry["name"] == Path(entry["path"]).name
-            assert (REPO_ROOT / entry["path"]).is_file()
-    assert "projects/pocky/physics/scenarios/syringe_two_cycle.json" in want["scenarios"]
-    assert "projects/pocky/physics/syringe_two_cycle_acceptance.json" in want["acceptance"]
+            assert (ws / entry["path"]).is_file()
+    assert f"projects/rig/{SCENARIO}" in want["scenarios"]
+    assert f"projects/rig/{ACCEPTANCE}" in want["acceptance"]
+    assert f"projects/rig/{OPTIONS}" in want["options"]
 
 
 def test_listing_for_project_without_physics_is_empty(svc):
-    status, doc = req_json(svc, "GET", "/v1/models/armor/armor_proto/physics-inputs")
+    status, doc = req_json(svc, "GET", "/v1/models/bare/box/physics-inputs")
     assert status == 200, doc
     assert (doc["scenarios"], doc["acceptance"], doc["options"]) == ([], [], [])
 
@@ -81,11 +87,11 @@ def test_listing_requires_token(svc):
 
 
 def test_listing_refuses_unknown_and_traversal(svc):
-    for path in ("/v1/models/pocky/nope/physics-inputs",
-                 "/v1/models/nope/syringe/physics-inputs",
-                 "/v1/models/%2E%2E/syringe/physics-inputs",
-                 "/v1/models/pocky/%2E%2E/physics-inputs",
-                 "/v1/models/pocky/..%2F..%2Fsyringe/physics-inputs"):
+    for path in ("/v1/models/rig/nope/physics-inputs",
+                 "/v1/models/nope/box/physics-inputs",
+                 "/v1/models/%2E%2E/box/physics-inputs",
+                 "/v1/models/rig/%2E%2E/physics-inputs",
+                 "/v1/models/rig/..%2F..%2Fbox/physics-inputs"):
         status, doc = req_json(svc, "GET", path)
         assert status == 404, (path, doc)
     status, _ = req_json(svc, "POST", INPUTS, body={})
@@ -115,21 +121,21 @@ def test_helper_skips_symlinks_and_other_files(tmp_path):
     assert [e.project_path for e in listing["options"]] == ["physics/options/o.toml"]
 
 
-def test_run_rejects_paths_not_in_listing(svc):
-    good = {"model": "pocky/syringe",
-            "scenario": "projects/pocky/physics/scenarios/syringe_two_cycle.json",
-            "acceptance": "projects/pocky/physics/syringe_two_cycle_acceptance.json"}
+def test_run_rejects_paths_not_in_listing(svc, ws):
+    good = {"model": "rig/box",
+            "scenario": f"projects/rig/{SCENARIO}",
+            "acceptance": f"projects/rig/{ACCEPTANCE}"}
     cases = (
-        ({"scenario": "projects/pocky/params.toml"}, 403),       # exists, not a scenario
+        ({"scenario": "projects/rig/params.toml"}, 403),         # exists, not a scenario
         ({"scenario": "params.toml"}, 403),                      # same, project-relative
-        ({"scenario": "physics/options.py"}, 403),
+        ({"scenario": PY_FILE}, 403),
         ({"scenario": good["acceptance"]}, 403),                 # listed, but as acceptance
-        ({"acceptance": "projects/pocky/physics/acceptance.toml"}, 403),
-        ({"options": "projects/pocky/physics/scenarios/syringe_two_cycle.json"}, 403),
+        ({"acceptance": f"projects/rig/{NOT_LISTED}"}, 403),
+        ({"options": f"projects/rig/{SCENARIO}"}, 403),
         ({"scenario": "pyproject.toml"}, 403),                   # repo file outside the project
-        ({"scenario": "projects/pocky/physics/scenarios/nope.json"}, 400),
-        ({"scenario": "projects/../projects/pocky/physics/scenarios/syringe_two_cycle.json"}, 403),
-        ({"scenario": str(REPO_ROOT / good["scenario"])}, 403),  # absolute
+        ({"scenario": "projects/rig/physics/scenarios/nope.json"}, 400),
+        ({"scenario": f"projects/../projects/rig/{SCENARIO}"}, 403),
+        ({"scenario": str(ws / good["scenario"])}, 403),         # absolute
     )
     before = len(svc.jobs)
     for override, expected_status in cases:
@@ -140,7 +146,7 @@ def test_run_rejects_paths_not_in_listing(svc):
 
 
 @pytest.mark.parametrize("spelling", ["repo", "project"])
-def test_run_accepts_listed_paths(svc, monkeypatch, spelling):
+def test_run_accepts_listed_paths(svc, ws, monkeypatch, spelling):
     seen: list[tuple] = []
 
     def fake_command(*args, **kwargs):
@@ -148,11 +154,11 @@ def test_run_accepts_listed_paths(svc, monkeypatch, spelling):
         return [sys.executable, "-c", "import time; time.sleep(60)"]
 
     monkeypatch.setattr(server, "_physics_command", fake_command)
-    prefix = "projects/pocky/" if spelling == "repo" else ""
-    body = {"model": "pocky/syringe",
-            "scenario": f"{prefix}physics/scenarios/syringe_two_cycle.json",
-            "acceptance": f"{prefix}physics/syringe_two_cycle_acceptance.json",
-            "options": f"{prefix}physics/options/syringe_two_cycle_wedge_clamped.toml"}
+    prefix = "projects/rig/" if spelling == "repo" else ""
+    body = {"model": "rig/box",
+            "scenario": f"{prefix}{SCENARIO}",
+            "acceptance": f"{prefix}{ACCEPTANCE}",
+            "options": f"{prefix}{OPTIONS}"}
     status, doc = req_json(svc, "POST", "/v1/runs", body=body)
     assert status == 202, doc
     job_id = doc["job"]["id"]
@@ -161,10 +167,11 @@ def test_run_accepts_listed_paths(svc, monkeypatch, spelling):
         while not seen and time.monotonic() < deadline:
             time.sleep(0.05)
         spec, scenario, acceptance, options, _out = seen[0]
-        assert spec == "pocky/syringe"
-        assert Path(scenario) == POCKY / "physics" / "scenarios" / "syringe_two_cycle.json"
-        assert Path(acceptance) == POCKY / "physics" / "syringe_two_cycle_acceptance.json"
-        assert Path(options) == POCKY / "physics" / "options" / "syringe_two_cycle_wedge_clamped.toml"
+        rig = ws / "projects" / "rig"
+        assert spec == "rig/box"
+        assert Path(scenario) == rig / SCENARIO
+        assert Path(acceptance) == rig / ACCEPTANCE
+        assert Path(options) == rig / OPTIONS
     finally:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:

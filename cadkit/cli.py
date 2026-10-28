@@ -11,8 +11,9 @@ from pathlib import Path
 
 from .checks import format_report, has_failures, run_checks, write_report
 from .export import export_assembly, export_part
-from .params import REPO_ROOT, override
+from .params import override
 from .project import Project, all_models, discover, list_models, load_model, resolve
+from .workspace import WorkspaceError, workspace_root
 
 
 # Local copy so the argparse hook can use it without importing the physics package.
@@ -63,7 +64,7 @@ def _build_parts(args, project: Project, model: str, p):
 
 
 def _outdir(args, project: Project, model: str) -> Path:
-    return Path(args.out) if args.out else REPO_ROOT / "out" / project.name / model
+    return Path(args.out) if args.out else workspace_root() / "out" / project.name / model
 
 
 @contextlib.contextmanager
@@ -770,15 +771,11 @@ def _physics_replay(args) -> int:
 
 
 def _fixture_outdir():
-    from .params import REPO_ROOT
-
-    return REPO_ROOT / "out" / "fixtures" / "m2a_asymmetric" / "physics" / "export"
+    return workspace_root() / "out" / "fixtures" / "m2a_asymmetric" / "physics" / "export"
 
 
 def _physics_outdir(project, model):
-    from .params import REPO_ROOT
-
-    return REPO_ROOT / "out" / project.name / model / "physics" / "export"
+    return workspace_root() / "out" / project.name / model / "physics" / "export"
 
 
 def json_status(status: str, scenario: str, detail: str = "") -> str:
@@ -938,8 +935,23 @@ def main(argv: list[str] | None = None) -> int:
             print(json_status("ERROR", "cli", "usage error"))
             raise SystemExit(EXIT_CODES_PHYSICS["ERROR"]) from None
         raise
-    code = args.fn(args)
+    try:
+        code = args.fn(args)
+    except WorkspaceError as exc:
+        code = _workspace_failure(args, words, exc)
     sys.exit(code)
+
+
+def _workspace_failure(args, words: list[str], exc: WorkspaceError) -> int:
+    """No workspace: a one-line error on stderr, and the command's usual JSON shape if any."""
+    msg = f"cad: {exc}"
+    print(msg, file=sys.stderr)
+    if words[:1] == ["physics"]:
+        print(json_status("ERROR", "cli", str(exc)))
+        return EXIT_CODES_PHYSICS["ERROR"]
+    if getattr(args, "json", False):
+        _emit_json({"error": str(exc), "exit_code": 1})
+    return 1
 
 
 if __name__ == "__main__":

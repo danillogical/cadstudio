@@ -11,3 +11,7 @@ MUJOCO_LOG.TXT
 .env.*
 !.env.example
 ui/dist/
+
+# VS Code extension packaging output
+editor/vscode/vsix-stage/
+editor/vscode/*.vsix

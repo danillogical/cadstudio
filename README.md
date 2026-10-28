@@ -1,150 +1,136 @@
 # cadstudio
 
-Python CAD projects on [build123d](https://github.com/gumyr/build123d), which runs on the OpenCascade B-rep kernel. The generic engine is `cadkit/` (params, STEP/STL/3MF export, renders, printability checks, the `cad` CLI). Each design is a project under `projects/`. Target printer: Prusa XL (360 × 360 × 360 mm bed), material PETG.
+Parametric CAD in Python, with the feedback loop built in. You describe a part with [build123d](https://github.com/gumyr/build123d) (an OpenCascade B-rep kernel), and `cadstudio` exports STEP, STL and 3MF, runs printability checks, renders views, runs optional MuJoCo physics sims, and shows it all live in a VS Code panel. It is built so that agents like Claude Code and Codex can drive it: every command has a `--json` mode, every build writes a report and renders an agent can read, and the repo ships the instructions and skills they need.
 
-| Project | What it is | Docs |
-|---|---|---|
-| `armor` | Cyberdeck lid armor: a two-piece shell for a Lenovo IdeaPad 3 Chromebook 11AST5. | This file, `MEASURING.md` |
-| `pocky` | Pocky packet dispenser (mechanical prototype, early skeleton). | `projects/pocky/README.md` |
+![A starter hinge, front view](docs/images/starter-hinge.png)
 
-## Setup
+## Requirements
+
+- macOS on Apple silicon (the physics wheel is arm64 only)
+- [Homebrew](https://brew.sh)
+- [VS Code](https://code.visualstudio.com) recommended, for the live viewer panel
+
+## Install
 
 ```
-uv sync
+git clone https://github.com/danillogical/cadstudio.git cadstudio
+cd cadstudio
+./setup.sh
+```
+
+`setup.sh` is safe to re-run. It installs `uv` and `node` (22 or newer) with Homebrew if they are missing, syncs the Python environment, builds the UI and the VS Code extension, installs the extension if the `code` command is available, and finishes with `cad doctor`. It can also offer PrusaSlicer. See `./setup.sh --help` for `--yes`, `--no-prusaslicer` and `--workspace`.
+
+## 5-minute quickstart
+
+The repo ships a small example project, `starter`, with two models.
+
+```
 uv run cad list
+uv run cad build starter/hinge --check --render --views standard
 ```
 
-`cad list` prints every model as `<project>/<model>`, for example `armor/armor_industrial`. Commands take `<project>/<model>`, or a bare model name when it is unique across projects. Add `--json` to `list`, `build`, `gui scene` or `doctor` for one machine-readable document on stdout (progress goes to stderr); `cad doctor` reports the local toolchain.
+`cad list` prints every model as `<project>/<model>`. The build writes to `out/starter/hinge/`:
 
-Output goes to `out/<project>/<model>/`. Adding `--check` writes `report.md` with a check table, and `--render` writes PNGs to `out/<project>/<model>/renders/`. Each project's default params file is `projects/<project>/params.toml`. To rebuild one model with both:
+- `report.md` and `report.json`: the check table (valid solid, watertight, bed fit, minimum wall, clearance, overhangs, mass).
+- `renders/*.png`: `iso`, `front`, `back`, `top`, and a print-pose image per part.
+- `assembly.step`, plus `.step`, `.stl` and `.3mf` per part (`leaf_a`, `leaf_b`), ready for a slicer.
 
-```
-uv run cad build armor/armor_proto --render --check --views standard
-```
-
-Run the tests with `uv run pytest tests -q` (about 3.5 minutes).
-
-## Optional physics
-
-Rigid-body physics is an optional extra. The CAD commands above never import it, so they work
-without it installed.
+Open it in the viewer:
 
 ```
-uv sync --extra physics
-uv run cad physics smoke
+uv run cad gui open starter/hinge
 ```
 
-`cad physics smoke` drops a 20 mm box 100 mm onto a fixed floor and checks the free fall
-against `z = ½gt²` (1 % gate), the contact time against `√(2h/g)` (a coarse sanity check at
-trace resolution, about ±8.5 %), the rest height (0.1 mm), the mass
-(`volume_mm3 × g/cm3 × 1e-6` kg) and the cube inertia (`m a²/6`). It writes `scene.xml`,
-`manifest.json`, `summary.json`, `report.md` and `trace.csv` under
-`out/fixtures/gravity_drop/physics/<run-id>/`. Exit codes: `0` PASS, `1` FAIL, `2`
-INCONCLUSIVE, `3` ERROR. A physics *usage* error also exits `3`, not argparse's `2`, so a
-typo can never be mistaken for an INCONCLUSIVE verdict. There is no GUI and no rendering on
-this path.
+Everything is driven from `projects/starter/params.toml`. Override a value for one run with `--set`:
 
-The fixed floor is an intentional analytic test fixture. It is not a product restraint and
-does not make the result a diagnostic-only run.
+```
+uv run cad build starter/hinge --check --set hinge.open_deg=45
+```
+
+Use `--views standard` while iterating (the default, `all`, is slow). Add `--json` to `list`, `build`, `gui scene` or `doctor` for one machine-readable document on stdout, with progress on stderr.
+
+## Your own projects
+
+A project is a package `projects/<name>/` with a `params.toml`, a `params.py`, and a `models/` package whose modules each expose `build(p)`. Copy `projects/starter/` as a template.
+
+Two ways to keep your projects:
+
+- **In this repo**, under `projects/`. Simple, but it mixes your work with the engine.
+- **In your own repo (recommended).** Create `projects/<name>/` there, plus a `pyproject.toml` that depends on the engine by path:
+
+  ```toml
+  [project]
+  name = "my-projects"
+  requires-python = ">=3.11,<3.14"
+  dependencies = ["cadstudio"]
+
+  [project.optional-dependencies]
+  physics = ["cadstudio[physics]"]
+
+  [tool.uv]
+  package = false
+
+  [tool.uv.sources]
+  cadstudio = { path = "../cadstudio", editable = true }
+  ```
+
+  Then, from the engine checkout:
+
+  ```
+  ./setup.sh --workspace ../my-projects
+  ```
+
+  This runs `uv sync` in your repo and links the engine's agent skills into it. Run `cad` from inside your repo: the nearest ancestor directory containing `projects/` is the workspace (or set `CADSTUDIO_WORKSPACE`), and outputs go to `<workspace>/out`.
 
 ## Live monitoring
 
 Open the panel once, then keep working in the terminal:
 
 ```
-uv run --frozen --extra physics cad gui open pocky/syringe
+uv run --frozen --extra physics cad gui open starter/hinge
 ```
 
 Keep **Follow** on in the panel (it is on by default). While it is on, edits to the shown model's sources under `projects/<project>/` rebuild that model in the service, and the panel picks up the new scene. A `cad physics run` appears as a live run: its poses stream into the panel while it steps, and when it finishes the panel swaps to the final trajectory and loops it.
 
 Scene writes and new runs under `out/` are shown whatever started them, so an agent's builds and sims show up in the panel too. Pass `--no-live` to `cad physics run` to skip the live stream; the finished run is still written. If the panel closes, the service drops the follow 60 s after its last renewal.
 
-## Pocky project
+## Physics (optional)
 
-The printed prototype CAD and motion proof are in
-[projects/pocky/README.md](projects/pocky/README.md). The MuJoCo workflow is paused
-after accepted generic M0–M4 infrastructure and the approved M5a-1 adapter/S0
-implementation plan. The product adapter has not been implemented or validated.
-Physical measurements and prototype trials remain unverified.
-
-Resume from [the checkpoint](docs/mujoco-paused.md),
-[planning acceptance](docs/mujoco-m5a-plan-acceptance.md) and
-[the approved plan](docs/mujoco-m5a-plan.md). Portable review evidence is in
-[docs/evidence/mujoco-m5a-plan](docs/evidence/mujoco-m5a-plan/README.md).
-
-# Armor project
-
-A 3D-printable armor shell that slides over the display lid of a Lenovo IdeaPad 3 Chromebook 11AST5 (11.6"). It has two pieces, a front bezel and a rear shell, joined with M3 screws into heat-set inserts. The shell slides down from the top of the lid. The hinge edge stays open, and the fit is loose so it never clamps the LCD. The original concept is `armor-p1.scad`, which is not part of this repo.
-
-The code is in `projects/armor/`, the params in `projects/armor/params.toml`, and the models in `projects/armor/models/`: `armor_industrial`, `armor_neon`, `armor_proto`, `demo_cube`, `fit_test`.
-
-## Models
-
-Masses are PETG estimates for fully solid parts, from `out/armor/*/report.md`. Sliced prints with infill weigh less.
-
-| Model | What it is | Parts (mass) |
-|---|---|---|
-| `fit_test` | Nine corner coupons sweeping slide clearance and lid thickness, plus an insert test. | `c040_t65` … `c100_t75` (about 19.2–20.2 g each), `insert_test` (3.5 g) |
-| `armor_proto` | Plain shell with no decoration. Use it to check the full fit. | `rear` (246.2 g), `front` (70.5 g) |
-| `armor_industrial` | Segmented bezel plates, corner guards, hex bolt and nut guards, stencil text, knurled rear skin. | `rear` (318.3 g), `front` (105.8 g) |
-| `armor_neon` | LED-strip channel with angular plates on the bezel, glow slots on the back. | `rear` (359.2 g), `front` (83.6 g), `diffuser_left` and `diffuser_right` (2.7 g each) |
-| `demo_cube` | A 20 mm test cube for checking the toolchain. Not part of the armor. | `cube` |
-
-Coupon names read as `c<clearance × 100>_t<thickness × 10>`. For example, `c070_t65` is clearance 0.7 mm and lid thickness 6.5 mm.
-
-## Measuring your lid
-
-Measure with calipers, then put each value in `projects/armor/params.toml`. See `MEASURING.md` for the step-by-step guide with diagrams and a record sheet.
-
-| Measurement | Key | Notes |
-|---|---|---|
-| Lid width, side edge to side edge | `lid.w` | |
-| Lid height, hinge-side edge to top edge | `lid.h` | |
-| Lid thickness | `lid.t` | Measure at several points and use the largest. |
-| Active display width (lit area) | `screen.w` | |
-| Active display height (lit area) | `screen.h` | |
-| Bottom edge of active area, from hinge edge | `screen.bottom` | |
-| Camera notch width | `camera.w` | |
-| Camera notch height | `camera.h` | |
-| Camera notch top, gap below lid top edge | `camera.top_offset` | |
-
-After changing any of these, rebuild every model, for example:
+Rigid-body physics uses MuJoCo and is an optional extra; the CAD commands never import it. `setup.sh` installs it. To check it works:
 
 ```
-uv run cad build armor/armor_proto --render --check --views standard
-uv run cad build armor/armor_industrial --render --check --views standard
-uv run cad build armor/armor_neon --render --check --views standard
-uv run cad build armor/fit_test --render --check --views standard
+uv run --frozen --extra physics cad physics smoke
 ```
 
-## Print order
+`cad physics smoke` drops a 20 mm box 100 mm onto a fixed floor and checks the free fall, contact time, rest height, mass and inertia against analytic values. Exit codes: `0` PASS, `1` FAIL, `2` INCONCLUSIVE, `3` ERROR. Real runs use `cad physics run <model> --scenario S --acceptance A`; see `cad physics --help`.
 
-1. **Print `fit_test` first.** The nine corner coupons sweep clearance {0.4, 0.7, 1.0} mm against lid thickness {6.5, 7.0, 7.5} mm. Each one is labelled on its side wall, for example `C0.4 T6.5`. Print `insert_test` with them. Print the coupons standing on their cut face.
-2. **Fit the coupons to the lid.** Slide each coupon onto the lid's top-left corner and pick the one that slides freely without rattling. Set `fit.slide_clearance` and `lid.t` in `projects/armor/params.toml` to match.
-3. **Choose the insert size.** `insert_test` has three bores at `insert_d` −0.3, 0 and +0.3 mm, labelled `-`, `0` and `+`. Pick the bore the heat-set insert seats in best, and set `fasteners.insert_d`.
-4. **Check the full fit.** Rebuild and print `armor_proto`.
-5. **Print a decorated variant.** Once the fit is confirmed, print `armor_industrial` or `armor_neon`.
+## Using with Claude Code or Codex
 
-## PETG settings
+Open the repo (or your projects repo, after `./setup.sh --workspace`) in Claude Code or Codex. `AGENTS.md` / `CLAUDE.md` and the skills in `.claude/skills/` and `.agents/skills/` load automatically, so the agent already knows the build loop, the checks and how to open the viewer. Try:
 
-These are recommended starting points.
+- "Build starter/box with checks and renders, then tell me which checks warn and why."
+- "Make the hinge knuckles 20% longer, rebuild, and show it to me in the viewer."
+- "Add a lid model to the starter project that fits starter/box with 0.3 mm clearance, and check it."
+- "Open starter/hinge in CADStudio."
 
-- 0.4 mm nozzle, 0.2 mm layers.
-- 4–6 perimeters, 15–20% gyroid infill.
-- Textured PEI sheet, no supports. The design avoids supports. Overhang warnings are short bridges.
-- Front bezel: print with the visible face up. Rear shell: print with the back face down.
-- Neon diffusers: clear or natural PETG.
-- Heat-set M3 inserts: soldering iron at about 230 °C.
+Agents should read `report.md` and at least one render before claiming a geometry change works.
 
-## Hardware
+## Troubleshooting
 
-- **M3 screws.** The shank length is `front_th + insert_depth − counterbore_depth` = 2.4 + 5.0 − 1.2 = 6.2 mm. Use M3×6, the nearest standard length. It ends 0.2 mm short of the insert bottom.
-- **Heat-set inserts.** Six, one per screw position.
-- **Neon LED strip.** A 5 mm-wide COB LED strip. The model's default strip width is 5.0 mm, set by `LED_STRIP_W` in `projects/armor/models/armor_neon.py:30`. Override it with `NEON_LED_STRIP_W`. The channel is the strip width plus 0.4 mm clearance.
-  - At 5 mm, all 26 path segments fit in a single run.
-  - At 8 mm, only 18 of 26 segments fit, split into 4 runs. The 8 mm strip therefore only partly fits. Measured with `NEON_LED_STRIP_W=8`.
-- **Neon diffusers.** Thin press-fit clear strips in the channel. Skip them with `NEON_DIFFUSER=0`. Use a separate `--out` directory, so the diffuser files from the main build are not left behind in `out/armor/armor_neon`:
+- **Start with `uv run cad doctor`.** It reports Python, uv, build123d, MuJoCo, node/npm, the output directory and the UI and extension builds.
+- **`code` command missing.** In VS Code, run `Shell Command: Install 'code' command in PATH` from the Command Palette, then re-run `./setup.sh`.
+- **Local health checks lie inside a sandbox.** Some agent sandboxes route loopback HTTP through a proxy that answers `200` for a dead server. Check that the GUI service is up with `lsof -nP -iTCP:<port> -sTCP:LISTEN` (the port is in `out/.gui/service.json`) rather than trusting an HTTP status.
+- **MuJoCo will not install.** The wheel is arm64 macOS only. On Intel Macs or other platforms, skip physics; CAD commands still work.
+- **Node too old.** The UI and extension need node 22 or newer: `brew upgrade node`.
+- **`prusa-slicer` not found.** Projects that slice from the command line need it on `PATH`; `./setup.sh` offers to install PrusaSlicer and link it into `~/.local/bin`.
 
-  ```
-  NEON_DIFFUSER=0 uv run cad build armor/armor_neon --out out/armor/armor_neon_nodiffuser --views standard
-  ```
+## Project layout
+
+```
+cadkit/            the engine: params, export, render, checks, physics, CLI, GUI service
+projects/starter/  the bundled example project (starter/box, starter/hinge)
+ui/                the Three.js viewer
+editor/vscode/     the VS Code extension that hosts the viewer
+tests/             pytest suite (about 3.5 minutes): uv run pytest tests -q
+setup.sh           one-shot installer
+```

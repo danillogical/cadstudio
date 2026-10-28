@@ -60,12 +60,12 @@ def status_of(call, *args) -> int:
 
 def test_store_create_claim_ack():
     store, clock = make_store()
-    request = store.create({"model": "pocky/syringe"})
-    assert request.state == "pending" and request.target == {"model": "pocky/syringe"}
+    request = store.create({"model": "starter/hinge"})
+    assert request.state == "pending" and request.target == {"model": "starter/hinge"}
     assert request.expiresAt == clock.t + 60.0
     assert store.status(request.id)["state"] == "pending"
     claimed = store.claim(request.id)
-    assert claimed.state == "claimed" and claimed.target == {"model": "pocky/syringe"}
+    assert claimed.state == "claimed" and claimed.target == {"model": "starter/hinge"}
     assert store.status(request.id)["state"] == "claimed"
     acked = store.ack(request.id)
     assert acked.state == "acked"
@@ -285,11 +285,11 @@ def test_routes_wrong_method_405(svc):
 
 def test_create_returns_id_expiry_and_target(svc):
     before = time.time()
-    status, doc = create(svc, {"model": "pocky/packet_dummy"})
+    status, doc = create(svc, {"model": "starter/box"})
     assert status == 201
     assert {"id", "expiresAt", "target"} <= set(doc)
     assert ID_RE.fullmatch(doc["id"])
-    assert doc["target"] == {"model": "pocky/packet_dummy"}
+    assert doc["target"] == {"model": "starter/box"}
     assert before + 59 <= doc["expiresAt"] <= time.time() + 61
 
 
@@ -301,9 +301,9 @@ def test_create_empty_target_and_empty_body(svc):
 
 
 @pytest.mark.parametrize("body", [
-    {"model": "pocky/packet_dummy", "extra": 1},
+    {"model": "starter/box", "extra": 1},
     {"bogus": True},
-    {"model": "pocky/packet_dummy", "run": "r1"},
+    {"model": "starter/box", "run": "r1"},
     {"model": ""},
     {"model": 5},
     {"model": None},
@@ -320,8 +320,8 @@ def test_create_non_object_and_bad_json_400(svc):
     assert http_req(svc, "POST", "/v1/open", raw=b"{nope")[0] == 400
 
 
-@pytest.mark.parametrize("spec", ["pocky/does_not_exist", "nosuchproject/x", "pocky", "a/b/c",
-                                  "../etc/passwd", "pocky/.."])
+@pytest.mark.parametrize("spec", ["starter/does_not_exist", "nosuchproject/x", "starter", "a/b/c",
+                                  "../etc/passwd", "starter/.."])
 def test_create_unknown_model_404(svc, spec):
     status, doc = create(svc, {"model": spec})
     assert status == 404 and "error" in doc
@@ -354,10 +354,10 @@ def test_create_run_must_be_a_run_dir(svc):
 
 
 def test_claim_returns_target_and_repo_root_once(svc):
-    _, made = create(svc, {"model": "pocky/packet_dummy"})
+    _, made = create(svc, {"model": "starter/box"})
     status, doc = http_req(svc, "GET", f"/v1/open/{made['id']}")
     assert status == 200
-    assert {"id": made["id"], "target": {"model": "pocky/packet_dummy"},
+    assert {"id": made["id"], "target": {"model": "starter/box"},
             "repoRoot": str(svc.repo_root)}.items() <= doc.items()
     assert doc["repoRoot"] == str(REPO_ROOT.resolve())
     status, doc = http_req(svc, "GET", f"/v1/open/{made['id']}")
@@ -466,7 +466,7 @@ def test_create_429_when_full(svc, clock_store):
 
 
 def test_open_routes_do_not_leak_token(svc):
-    _, made = create(svc, {"model": "pocky/packet_dummy"})
+    _, made = create(svc, {"model": "starter/box"})
     for method, path, body in [("GET", f"/v1/open/{made['id']}", None),
                                ("GET", f"/v1/open/{made['id']}/status", None)]:
         conn = http.client.HTTPConnection("127.0.0.1", svc.port, timeout=30)
@@ -509,8 +509,8 @@ def test_vscode_uri_and_gui_url():
     assert opener.vscode_uri("abc_DEF-123") == "vscode://danillogical.cadstudio/open?req=abc_DEF-123"
     record = {"port": 4321, "token": "tok"}
     assert opener.gui_url(record, None) == "http://127.0.0.1:4321/?token=tok"
-    assert opener.gui_url(record, {"model": "pocky/syringe"}) == \
-        "http://127.0.0.1:4321/?token=tok&model=pocky%2Fsyringe"
+    assert opener.gui_url(record, {"model": "starter/hinge"}) == \
+        "http://127.0.0.1:4321/?token=tok&model=starter%2Fhinge"
     assert opener.gui_url(record, {"run": "a/b"}).endswith("&run=a%2Fb")
 
 
@@ -605,7 +605,7 @@ def acked_after(n):
     return lambda api: {"state": "acked" if api.status_calls > n else "pending"}
 
 
-TARGET = {"model": "pocky/syringe"}
+TARGET = {"model": "starter/hinge"}
 
 
 def test_open_vscode_acked():
@@ -751,7 +751,7 @@ def test_open_browser_editor_never_creates_a_request():
     assert result.exit_code == 0 and result.doc["opened"] == "browser"
     assert h.api_built == 0 and api.created == []
     assert h.code_cmds == [] and h.browser_cmds == [["/usr/bin/open", result.doc["url"]]]
-    assert "model=pocky%2Fsyringe" in result.doc["url"]
+    assert "model=starter%2Fhinge" in result.doc["url"]
 
 
 def test_open_browser_uses_xdg_open_on_linux():
@@ -788,7 +788,7 @@ def test_open_no_open_prints_url_only():
     h = Harness(api)
     result = h.open("vscode", TARGET, no_open=True)
     assert result.exit_code == 0 and result.doc["opened"] is None
-    assert result.doc["url"] == f"http://127.0.0.1:4555/?token={TOKEN}&model=pocky%2Fsyringe"
+    assert result.doc["url"] == f"http://127.0.0.1:4555/?token={TOKEN}&model=starter%2Fhinge"
     assert h.cmds == [] and h.api_built == 0 and api.created == []
 
 
@@ -832,12 +832,12 @@ def test_open_service_failure_is_exit_1():
 def test_run_rejects_bad_arguments_with_exit_2(tmp_path, capsys):
     deps = Harness(FakeApi()).deps
     deps.out_root = tmp_path
-    assert opener.run(model="pocky/syringe", run_dir="x", deps=deps) == 2
+    assert opener.run(model="starter/hinge", run_dir="x", deps=deps) == 2
     assert opener.run(model=None, run_dir=None, editor="emacs", deps=deps) == 2
-    assert opener.run(model="pocky/does_not_exist", run_dir=None, deps=deps) == 2
+    assert opener.run(model="starter/does_not_exist", run_dir=None, deps=deps) == 2
     assert opener.run(model=None, run_dir="missing", deps=deps) == 2
     capsys.readouterr()
-    assert opener.run(model="pocky/does_not_exist", run_dir=None, as_json=True, deps=deps) == 2
+    assert opener.run(model="starter/does_not_exist", run_dir=None, as_json=True, deps=deps) == 2
     out = capsys.readouterr().out
     assert json.loads(out) == {"opened": None, "error": json.loads(out)["error"], "exit_code": 2}
 
@@ -869,31 +869,31 @@ def test_run_target_rules(tmp_path):
 
 def test_run_json_output_shape_and_exit(capsys):
     h = Harness(FakeApi(acked_after(0)))
-    code = opener.run(model="pocky/packet_dummy", run_dir=None, editor="vscode", as_json=True,
+    code = opener.run(model="starter/box", run_dir=None, editor="vscode", as_json=True,
                       deps=h.deps)
     captured = capsys.readouterr()
     assert code == 0
     doc = json.loads(captured.out)  # stdout is exactly one JSON document
     assert doc["opened"] == "vscode" and doc["exit_code"] == 0
-    assert doc["target"] == {"model": "pocky/packet_dummy"} and doc["requestId"] == REQ_ID
+    assert doc["target"] == {"model": "starter/box"} and doc["requestId"] == REQ_ID
     assert {"opened", "editor", "target", "url", "requestId", "reason", "service"} <= set(doc)
 
 
 def test_run_human_output_never_prints_the_token(capsys):
     ok = Harness(FakeApi(acked_after(0)))
-    assert opener.run(model="pocky/packet_dummy", run_dir=None, editor="vscode", deps=ok.deps) == 0
+    assert opener.run(model="starter/box", run_dir=None, editor="vscode", deps=ok.deps) == 0
     captured = capsys.readouterr()
-    assert "Opened pocky/packet_dummy in VS Code." in captured.out
+    assert "Opened starter/box in VS Code." in captured.out
     assert TOKEN not in captured.out + captured.err
 
     failed = Harness(FakeApi(lambda api: {"state": "nacked", "reason": "no"}))
-    assert opener.run(model="pocky/packet_dummy", run_dir=None, editor="vscode",
+    assert opener.run(model="starter/box", run_dir=None, editor="vscode",
                       deps=failed.deps) == 3
     captured = capsys.readouterr()
     assert TOKEN not in captured.out + captured.err and captured.out == ""
 
     browser = Harness(FakeApi(), env={"TERM_PROGRAM": "vscode"})
-    assert opener.run(model="pocky/packet_dummy", run_dir=None, deps=browser.deps) == 0
+    assert opener.run(model="starter/box", run_dir=None, deps=browser.deps) == 0
     captured = capsys.readouterr()
     assert TOKEN not in captured.out + captured.err
 
@@ -911,7 +911,8 @@ import sys
 from pathlib import Path
 from cadkit.gui import opener
 # Point the default out dir at the test service's, then run the real `cad` entry point.
-opener.REPO_ROOT = Path(sys.argv[1])
+_run = opener.run
+opener.run = lambda **kw: _run(**kw, deps=opener.OpenDeps(out_root=Path(sys.argv[1]) / "out"))
 from cadkit.cli import main
 sys.exit(main(sys.argv[2:]))
 '''
@@ -1033,11 +1034,11 @@ def request_state(e2e, request_id):
 
 
 def test_e2e_vscode_acked(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", "--json", mode="ack")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", "--json", mode="ack")
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["opened"] == "vscode" and doc["exit_code"] == 0 and doc["reason"] is None
-    assert doc["target"] == {"model": "pocky/packet_dummy"}
+    assert doc["target"] == {"model": "starter/box"}
     assert doc["service"]["port"] == fresh.service.port and doc["service"]["started"] is False
     assert doc["url"].startswith(f"http://127.0.0.1:{fresh.service.port}/?token=")
     assert {"opened", "editor", "target", "url", "requestId", "reason", "service"} <= set(doc)
@@ -1045,15 +1046,15 @@ def test_e2e_vscode_acked(fresh):
     assert lines[0]["argv"] == ["--open-url",
                                 f"vscode://danillogical.cadstudio/open?req={doc['requestId']}"]
     assert lines[1]["claimed"]["repoRoot"] == str(REPO_ROOT.resolve())
-    assert lines[1]["claimed"]["target"] == {"model": "pocky/packet_dummy"}
+    assert lines[1]["claimed"]["target"] == {"model": "starter/box"}
     assert request_state(fresh, doc["requestId"])["state"] == "acked"
     assert fresh.open_lines() == []  # no browser was launched
 
 
 def test_e2e_vscode_acked_human_output_hides_token(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", mode="ack")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", mode="ack")
     assert r.returncode == 0, r.stderr
-    assert r.stdout.strip() == "Opened pocky/packet_dummy in VS Code."
+    assert r.stdout.strip() == "Opened starter/box in VS Code."
     assert fresh.service.token not in r.stdout + r.stderr
 
 
@@ -1067,7 +1068,7 @@ def test_e2e_run_target_acked(fresh):
 
 def test_e2e_vscode_nack_exits_3_quickly(fresh):
     start = time.monotonic()
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", "--json", mode="nack")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", "--json", mode="nack")
     assert time.monotonic() - start < 9.0
     assert r.returncode == 3
     doc = json.loads(r.stdout)
@@ -1077,7 +1078,7 @@ def test_e2e_vscode_nack_exits_3_quickly(fresh):
 
 
 def test_e2e_code_launch_failure_exits_3_and_redacts(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", "--json", mode="exit1")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", "--json", mode="exit1")
     assert r.returncode == 3
     doc = json.loads(r.stdout)
     assert doc["opened"] is None
@@ -1087,7 +1088,7 @@ def test_e2e_code_launch_failure_exits_3_and_redacts(fresh):
 
 def test_e2e_vscode_silence_times_out_after_10s_and_withdraws_request(fresh):
     start = time.monotonic()
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", "--json", mode="none")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", "--json", mode="none")
     elapsed = time.monotonic() - start
     assert r.returncode == 3
     doc = json.loads(r.stdout)
@@ -1101,17 +1102,17 @@ def test_e2e_vscode_silence_times_out_after_10s_and_withdraws_request(fresh):
 
 
 def test_e2e_auto_in_vscode_terminal_nack_falls_back_to_browser(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--json", mode="nack", term="vscode")
+    r = fresh.cad("gui", "open", "starter/box", "--json", mode="nack", term="vscode")
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["opened"] == "browser" and "wrong window" in doc["reason"]
     assert fresh.open_lines() == [[doc["url"]]]
-    assert "model=pocky%2Fpacket_dummy" in doc["url"]
+    assert "model=starter%2Fbox" in doc["url"]
     assert fresh.service.token not in r.stderr  # stderr explains the fallback without the URL
 
 
 def test_e2e_auto_outside_vscode_terminal_skips_code(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--json", mode="ack", term=None)
+    r = fresh.cad("gui", "open", "starter/box", "--json", mode="ack", term=None)
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["opened"] == "browser" and doc["requestId"] is None
@@ -1120,36 +1121,36 @@ def test_e2e_auto_outside_vscode_terminal_skips_code(fresh):
 
 
 def test_e2e_browser_editor_and_launch_failure(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "browser", "--json")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "browser", "--json")
     assert r.returncode == 0 and json.loads(r.stdout)["opened"] == "browser"
     assert fresh.code_lines() == []
     fresh.reset()
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "browser", "--json", open_exit=1)
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "browser", "--json", open_exit=1)
     assert r.returncode == 3
     assert json.loads(r.stdout)["opened"] is None
 
 
 def test_e2e_no_open(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--no-open", "--json")
+    r = fresh.cad("gui", "open", "starter/box", "--no-open", "--json")
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["opened"] is None and f"token={fresh.service.token}" in doc["url"]
     assert fresh.code_lines() == [] and fresh.open_lines() == []
-    plain = fresh.cad("gui", "open", "pocky/packet_dummy", "--no-open")
+    plain = fresh.cad("gui", "open", "starter/box", "--no-open")
     assert plain.returncode == 0
     assert plain.stdout.strip().startswith("http://127.0.0.1:") and plain.stderr == ""
 
 
 def test_e2e_usage_errors_exit_2(fresh):
-    r = fresh.cad("gui", "open", "pocky/does_not_exist", "--json")
+    r = fresh.cad("gui", "open", "starter/does_not_exist", "--json")
     assert r.returncode == 2
     doc = json.loads(r.stdout)
     assert doc["opened"] is None and doc["exit_code"] == 2 and doc["error"]
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--run", "mj/r1", "--json")
+    r = fresh.cad("gui", "open", "starter/box", "--run", "mj/r1", "--json")
     assert r.returncode == 2
     r = fresh.cad("gui", "open", "--run", "mj/missing", "--json")
     assert r.returncode == 2
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "emacs")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "emacs")
     assert r.returncode == 2
     assert fresh.code_lines() == [] and fresh.open_lines() == []
 

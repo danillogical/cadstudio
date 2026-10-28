@@ -1,0 +1,34 @@
+# Frozen copy of the starter params for the engine tests; edit projects/starter/params.toml freely.
+# structure.min_wall is 2.4 here (the project uses 1.6).
+# Single source of truth for the starter models (all mm unless noted).
+
+[box]
+w = 60         # outer width (X)
+d = 40         # outer depth (Y)
+h = 25         # outer height (Z)
+wall = 2.4     # wall and floor thickness
+corner_r = 4.0 # radius of the vertical outer corners
+
+[hinge]
+leaf_w = 30      # leaf plate width, measured from the hinge axis
+leaf_t = 3.0     # leaf plate thickness
+knuckle_len = 15 # length of each knuckle along the axis
+knuckle_r = 5.0  # knuckle outer radius
+pin_r = 1.5      # pin radius
+open_deg = 90    # angle between the leaves in the assembly; 180 is flat
+
+[fit]
+clearance = 0.4  # gap between the moving parts (pin to bore, knuckle to knuckle)
+
+[structure]
+min_wall = 2.4   # differs from the project default on purpose: the check tests use 1.6 / 3.0 mm plates
+
+[printer]
+bed_x = 360
+bed_y = 360
+bed_z = 360
+
+[material]
+name = "PETG"
+density_g_cm3 = 1.27
+filament_d = 1.75

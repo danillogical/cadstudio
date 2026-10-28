@@ -98,9 +98,9 @@ class LiveWriter:
         if not math.isfinite(fps) or not 0.0 < fps <= MAX_FPS:
             raise ValueError(f"live fps must be a finite number in (0, {MAX_FPS:g}], got {fps!r}")
         if out_root is None:
-            from ..params import REPO_ROOT
+            from ..workspace import workspace_root
 
-            out_root = REPO_ROOT / "out"
+            out_root = workspace_root() / "out"
         self.fps = fps
         self.flush_s = float(flush_s)
         self.out_root = Path(out_root)

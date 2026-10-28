@@ -336,9 +336,9 @@ def probe_start_mm(through_path: bool) -> tuple[float, float, float]:
 
 def default_channel_outdir(run_id: str) -> Path:
     """``out/fixtures/m2b_u_channel/physics/<run-id>/``, matching the M1 convention."""
-    from ..params import REPO_ROOT
+    from ..workspace import workspace_root
 
-    return REPO_ROOT / "out" / "fixtures" / "m2b_u_channel" / "physics" / run_id
+    return workspace_root() / "out" / "fixtures" / "m2b_u_channel" / "physics" / run_id
 
 
 def run_channel_evidence(outdir: Path | None = None, *, duration_s: float = DURATION_S,

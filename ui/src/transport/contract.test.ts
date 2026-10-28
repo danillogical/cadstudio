@@ -330,17 +330,17 @@ describe.each(FACTORIES)("transport contract: %s", (_name, factory) => {
 
   it("startRun sends exactly the documented body", async () => {
     setup(() => ({ status: 202, json: { job: { ...JOB, kind: "run" } } }));
-    const req = { model: "pocky/syringe", scenario: "projects/pocky/s.toml", acceptance: "projects/pocky/a.toml" };
+    const req = { model: "pocky/syringe", scenario: "projects/starter/s.toml", acceptance: "projects/starter/a.toml" };
     expect((await transport.startRun(req)).kind).toBe("run");
-    await transport.startRun({ ...req, options: "projects/pocky/o.toml" });
+    await transport.startRun({ ...req, options: "projects/starter/o.toml" });
     expect(service.requests.map((r) => [r.method, r.path, r.body])).toEqual([
       ["POST", "/v1/runs", req],
-      ["POST", "/v1/runs", { ...req, options: "projects/pocky/o.toml" }],
+      ["POST", "/v1/runs", { ...req, options: "projects/starter/o.toml" }],
     ]);
   });
 
   it("listPhysicsInputs", async () => {
-    const inputs = { schemaVersion: 1, project: "pocky", model: "syringe", scenarios: [{ name: "a", path: "projects/pocky/a.toml" }], acceptance: [], options: [] };
+    const inputs = { schemaVersion: 1, project: "pocky", model: "syringe", scenarios: [{ name: "a", path: "projects/starter/a.toml" }], acceptance: [], options: [] };
     setup(() => ({ status: 200, json: inputs }));
     expect(await transport.listPhysicsInputs("pocky/syringe")).toEqual(inputs);
     expect(service.requests[0]).toMatchObject({ method: "GET", path: "/v1/models/pocky/syringe/physics-inputs" });

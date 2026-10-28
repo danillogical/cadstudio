@@ -1,7 +1,7 @@
 [project]
 name = "cadstudio"
 version = "0.1.0"
-description = "Iterative build123d CAD tooling for a Chromebook lid armor shell"
+description = "Python CAD workflow on build123d: parametric models, printability checks, renders, MuJoCo physics and a live VS Code viewer"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "build123d",
@@ -37,7 +37,7 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["cadkit", "projects"]
+packages = ["cadkit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

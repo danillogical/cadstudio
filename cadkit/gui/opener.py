@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
-from ..params import REPO_ROOT
+from ..workspace import out_root as workspace_out_root
+from ..workspace import workspace_root
 from .server import MAX_BODY_BYTES, _pid_alive, discovery_path, existing_service, read_discovery
 
 EXTENSION_URI = "vscode://danillogical.cadstudio/open"
@@ -342,8 +343,8 @@ def wait_for_ack(status: Callable[[], dict], *, timeout_s: float = ACK_TIMEOUT_S
 class OpenDeps:
     """Everything ``open_gui`` touches outside its arguments; tests replace fields."""
 
-    repo_root: Path = REPO_ROOT
-    out_root: Path = field(default_factory=lambda: REPO_ROOT / "out")
+    repo_root: Path = field(default_factory=workspace_root)
+    out_root: Path = field(default_factory=workspace_out_root)
     env: Mapping[str, str] = field(default_factory=lambda: os.environ)
     which: Callable[[str], str | None] = shutil.which
     run: Callable = subprocess.run

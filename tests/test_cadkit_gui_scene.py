@@ -38,17 +38,17 @@ def _run_scene(spec: str, out: Path) -> dict:
 
 
 @pytest.fixture(scope="module")
-def dummy_runs(tmp_path_factory):
-    first = tmp_path_factory.mktemp("scene_dummy_a")
-    second = tmp_path_factory.mktemp("scene_dummy_b")
-    return (_run_scene("pocky/packet_dummy", first), first,
-            _run_scene("pocky/packet_dummy", second), second)
+def box_runs(tmp_path_factory):
+    first = tmp_path_factory.mktemp("scene_box_a")
+    second = tmp_path_factory.mktemp("scene_box_b")
+    return (_run_scene("starter/box", first), first,
+            _run_scene("starter/box", second), second)
 
 
 @pytest.fixture(scope="module")
-def syringe_run(tmp_path_factory):
-    out = tmp_path_factory.mktemp("scene_syringe")
-    return _run_scene("pocky/syringe", out), out
+def hinge_run(tmp_path_factory):
+    out = tmp_path_factory.mktemp("scene_hinge")
+    return _run_scene("starter/hinge", out), out
 
 
 def _scene(out: Path) -> dict:
@@ -60,15 +60,15 @@ def _params(spec: str):
     return project, project.load_params(project.params_path)
 
 
-@pytest.mark.parametrize("spec", ["pocky/packet_dummy", "pocky/syringe"])
-def test_scene_json_contract(spec, dummy_runs, syringe_run):
-    doc = dummy_runs[0] if spec.endswith("packet_dummy") else syringe_run[0]
-    out = dummy_runs[1] if spec.endswith("packet_dummy") else syringe_run[1]
+@pytest.mark.parametrize("spec", ["starter/box", "starter/hinge"])
+def test_scene_json_contract(spec, box_runs, hinge_run):
+    doc = box_runs[0] if spec.endswith("box") else hinge_run[0]
+    out = box_runs[1] if spec.endswith("box") else hinge_run[1]
     scene = _scene(out)
 
     assert scene["schemaVersion"] == 1
     assert scene["units"] == "mm"
-    assert scene["project"] == "pocky"
+    assert scene["project"] == "starter"
     assert scene["model"] == spec.split("/")[1]
 
     prov = scene["provenance"]
@@ -83,25 +83,24 @@ def test_scene_json_contract(spec, dummy_runs, syringe_run):
     assert Path(doc["scene"]) == out / "scene.json"
 
 
-@pytest.mark.parametrize("spec", ["pocky/packet_dummy", "pocky/syringe"])
-def test_every_part_has_glb(spec, dummy_runs, syringe_run, monkeypatch):
-    out = dummy_runs[1] if spec.endswith("packet_dummy") else syringe_run[1]
+@pytest.mark.parametrize("spec", ["starter/box", "starter/hinge"])
+def test_every_part_has_glb(spec, box_runs, hinge_run):
+    out = box_runs[1] if spec.endswith("box") else hinge_run[1]
     scene = _scene(out)
-    monkeypatch.delenv("POCKY_POSE", raising=False)
     project, p = _params(spec)
     expected = list(load_model(project, spec.split("/")[1]).build(p))
     assert [part["id"] for part in scene["parts"]] == expected
-    if spec.endswith("syringe"):
-        assert len(scene["parts"]) == 8
+    if spec.endswith("hinge"):
+        assert len(scene["parts"]) == 2
     for part in scene["parts"]:
         path = out / part["mesh"]
         assert path.is_file(), part["mesh"]
         assert path.read_bytes()[:4] == b"glTF"
 
 
-@pytest.mark.parametrize("spec", ["pocky/packet_dummy", "pocky/syringe"])
-def test_glb_bounds_match_bbox(spec, dummy_runs, syringe_run):
-    out = dummy_runs[1] if spec.endswith("packet_dummy") else syringe_run[1]
+@pytest.mark.parametrize("spec", ["starter/box", "starter/hinge"])
+def test_glb_bounds_match_bbox(spec, box_runs, hinge_run):
+    out = box_runs[1] if spec.endswith("box") else hinge_run[1]
     scene = _scene(out)
     for part in scene["parts"]:
         mesh = trimesh.load(out / part["mesh"], force="mesh")
@@ -110,30 +109,29 @@ def test_glb_bounds_match_bbox(spec, dummy_runs, syringe_run):
             assert abs(mesh.bounds[0][axis] - bb["min"][axis]) <= TOL_MM, (part["id"], "min", axis)
             assert abs(mesh.bounds[1][axis] - bb["max"][axis]) <= TOL_MM, (part["id"], "max", axis)
 
-    if spec.endswith("packet_dummy"):
-        # Independent of the mesh: the dummy's box is the packet envelope in assembly coords.
+    if spec.endswith("box"):
+        # Independent of the mesh: the tray is the box envelope in assembly coords, resting on z=0.
         _, p = _params(spec)
         part = scene["parts"][0]
         size = [part["bbox"]["max"][i] - part["bbox"]["min"][i] for i in range(3)]
-        want = (p.packet.length, p.packet.width, p.packet.height)
+        want = (p.box.w, p.box.d, p.box.h)
         assert all(abs(got - exp) <= TOL_MM for got, exp in zip(size, want)), (size, want)
         assert abs(part["bbox"]["min"][2]) <= TOL_MM
 
 
-def test_assembly_not_print_pose(syringe_run, monkeypatch):
-    _, out = syringe_run
+def test_assembly_not_print_pose(hinge_run):
+    _, out = hinge_run
     scene = _scene(out)
-    slider = next(part for part in scene["parts"] if part["id"] == "slider")
-    pose = slider["printPose"]
+    leaf_b = next(part for part in scene["parts"] if part["id"] == "leaf_b")
+    pose = leaf_b["printPose"]
     assert pose[3] == [0.0, 0.0, 0.0, 1.0]
     assert pose != [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
                     [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
 
-    monkeypatch.delenv("POCKY_POSE", raising=False)
-    project, p = _params("pocky/syringe")
-    mp = load_model(project, "syringe").build(p)["slider"]
+    project, p = _params("starter/hinge")
+    mp = load_model(project, "hinge").build(p)["leaf_b"]
     bb = mp.shape.bounding_box()
-    mesh = trimesh.load(out / slider["mesh"], force="mesh")
+    mesh = trimesh.load(out / leaf_b["mesh"], force="mesh")
     for axis, (lo, hi) in enumerate(((bb.min.X, bb.max.X), (bb.min.Y, bb.max.Y), (bb.min.Z, bb.max.Z))):
         assert abs(mesh.bounds[0][axis] - lo) <= TOL_MM
         assert abs(mesh.bounds[1][axis] - hi) <= TOL_MM
@@ -142,20 +140,19 @@ def test_assembly_not_print_pose(syringe_run, monkeypatch):
     assert abs(posed.min.Z - bb.min.Z) > TOL_MM or abs(posed.max.Z - bb.max.Z) > TOL_MM
 
 
-def test_rerun_byte_identical(dummy_runs):
-    first, second = dummy_runs[1], dummy_runs[3]
+def test_rerun_byte_identical(box_runs):
+    first, second = box_runs[1], box_runs[3]
     a = re.sub(rb'"builtAt": "[^"]*"', b'"builtAt": ""', (first / "scene.json").read_bytes())
     b = re.sub(rb'"builtAt": "[^"]*"', b'"builtAt": ""', (second / "scene.json").read_bytes())
     assert a == b
 
 
-def test_overrides_recorded(tmp_path, monkeypatch):
-    monkeypatch.delenv("POCKY_POSE", raising=False)
-    r = cad("gui", "scene", "pocky/packet_dummy", "--json", "--set", "packet.length=150.0",
+def test_overrides_recorded(tmp_path):
+    r = cad("gui", "scene", "starter/box", "--json", "--set", "box.w=150.0",
             "--out", str(tmp_path))
     assert r.returncode == 0, r.stderr
     scene = _scene(tmp_path)
-    assert scene["provenance"]["overrides"] == {"packet.length": 150.0}
+    assert scene["provenance"]["overrides"] == {"box.w": 150.0}
     part = scene["parts"][0]
     assert abs((part["bbox"]["max"][0] - part["bbox"]["min"][0]) - 150.0) <= TOL_MM
 
@@ -171,7 +168,7 @@ def test_unknown_model_json_error(tmp_path):
 
 def test_unknown_parameter_json_error(tmp_path):
     out = tmp_path / "scene"
-    r = cad("gui", "scene", "pocky/packet_dummy", "--json", "--set", "nope.key=1",
+    r = cad("gui", "scene", "starter/box", "--json", "--set", "nope.key=1",
             "--out", str(out))
     assert r.returncode == 1
     doc = json.loads(r.stdout)

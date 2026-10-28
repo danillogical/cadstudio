@@ -1,7 +1,0 @@
-spring_stiffness_n_m = 500.0
-timestep_s = 0.0000625
-contact_timeconst_s = 0.00025
-stop_timeconst_s = 0.00025
-button_actuator = true
-packets = 3
-separator = "blade"

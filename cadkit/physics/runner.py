@@ -306,9 +306,9 @@ def _select_document_text(document, explicit: str | None, matcher) -> str:
 def _claim_run_dir(scenario: ScenarioSpec, outdir: Path | None) -> tuple[Path, str]:
     scenario_hash = scenario.hash()[:8]
     if outdir is None:
-        from ..params import REPO_ROOT
+        from ..workspace import workspace_root
 
-        parent = REPO_ROOT / "out" / "fixtures" / "m4a" / scenario.scenario_id / "physics"
+        parent = workspace_root() / "out" / "fixtures" / "m4a" / scenario.scenario_id / "physics"
         run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{scenario_hash}"
         run_dir = parent / run_id
         run_dir.mkdir(parents=True, exist_ok=False)

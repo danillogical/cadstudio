@@ -1,6 +1,6 @@
 """Authenticated local GUI service: ``cad gui serve`` on 127.0.0.1.
 
-Artifact contracts (plan-gui.md section 3.1)
+Artifact contracts
 
 **Scene** (``out/<project>/<model>/scene/``, written by ``cad gui scene <model>``):
 - ``scene.json`` contains:
@@ -20,9 +20,9 @@ Artifact contracts (plan-gui.md section 3.1)
 - ``contacts.bin`` (optional) holds per-frame contact points and normal forces.
 - Body meshes come from the run's ``assets/*.stl``. The geom-to-body mapping comes from compiling the run's ``scene.xml``.
 
-**Service discovery:** ``out/.gui/service.json`` with pid, port, token, protocol version, repo root, start time and mode ``0600``.
+**Service discovery:** ``<workspace>/out/.gui/service.json`` with pid, port, token, protocol version, repo root (the workspace's real path, see ``cadkit.workspace``), start time and mode ``0600``.
 
-Service surface (plan-gui.md section 3.2; ``schemaVersion`` on every response)
+Service surface (``schemaVersion`` on every response)
 
 | Endpoint | Purpose |
 |---|---|
@@ -44,7 +44,7 @@ Service surface (plan-gui.md section 3.2; ``schemaVersion`` on every response)
 | ``GET /v1/open/{id}`` | claim an open request (single use): its target and the repo root |
 | ``POST /v1/open/{id}/ack``, ``POST /v1/open/{id}/nack`` | the editor opened the target, or refused with ``{reason}`` |
 | ``GET /v1/open/{id}/status`` | ``pending``, ``claimed``, ``acked``, ``nacked`` (with reason) or ``expired`` |
-| ``GET /`` | the built ``ui/dist`` |
+| ``GET /`` | the engine's built ``ui/dist`` |
 
 Rules:
 - Every non-health route requires ``Authorization: Bearer <token>``, or the ``?token=`` query the server gives the browser on open.
@@ -69,7 +69,7 @@ Deviations and response details
 - ``GET /v1/models/{project}/{model}/physics-inputs`` (token required) lists the files a run may
   use: ``scenarios`` (``physics/scenarios/*.json``), ``acceptance`` (``physics/*_acceptance.json``)
   and ``options`` (``physics/options/*.toml``), each entry ``{"name", "path"}`` with ``path``
-  relative to the repo root. Only regular, non-symlink files inside the project are listed.
+  relative to the workspace root. Only regular, non-symlink files inside the project are listed.
 - ``POST /v1/runs`` accepts a scenario, acceptance or options path only when it is in that
   listing, spelled repo-relative (as listed) or project-relative. Traversal, absolute and
   outside-project paths are 403, a missing file is 400, and an existing unlisted file is 403.
@@ -141,6 +141,7 @@ import collections
 import contextlib
 import hashlib
 import hmac
+import html
 import http.server
 import json
 import math
@@ -163,8 +164,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..params import REPO_ROOT
 from ..project import Project, all_models, discover, list_models, resolve
+from ..workspace import ENGINE_ROOT, workspace_root
 from . import watch as _watch
 from .watch import Watcher, is_run_dir, walk_out
 
@@ -214,13 +215,20 @@ _CONTENT_TYPES = {
     ".woff2": "font/woff2",
 }
 
+# The built UI ships with the engine, not with the workspace.
+ENGINE_UI_DIST = ENGINE_ROOT / "ui" / "dist"
+
 _FALLBACK_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>CADStudio GUI</title></head>
 <body><h1>CADStudio GUI</h1>
 <p>The GUI is not built. Run:</p>
-<pre>cd ui &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+<pre>cd {ui_dir} &amp;&amp; npm ci &amp;&amp; npm run build</pre>
 </body></html>
 """
+
+
+def _fallback_page(dist: Path) -> str:
+    return _FALLBACK_PAGE.format(ui_dir=html.escape(str(dist.parent)))
 
 
 class _HttpError(Exception):
@@ -452,15 +460,18 @@ class OpenRequestStore:
 class GuiService:
     """The loopback HTTP service, its job table and its discovery record."""
 
-    def __init__(self, *, repo_root=REPO_ROOT, out_root=None, port: int = 0,
+    def __init__(self, *, repo_root=None, out_root=None, ui_dist=None, port: int = 0,
                  quiet: bool = False, watch: bool = True,
                  watch_interval: float = _watch.DEFAULT_INTERVAL_S,
                  watch_debounce: float = _watch.DEFAULT_DEBOUNCE_S,
                  follow_lease: float = _watch.DEFAULT_LEASE_S,
                  live_interval: float = _watch.DEFAULT_LIVE_INTERVAL_S) -> None:
-        self.repo_root = Path(repo_root).resolve()
+        # repo_root is the workspace: projects, out/, build cwd and physics-input paths.
+        self.repo_root = Path(repo_root if repo_root is not None else workspace_root()).resolve()
         self.out_root = Path(out_root) if out_root is not None else self.repo_root / "out"
         self.out_root = self.out_root.resolve()
+        # The built UI ships with the engine, whatever workspace is served.
+        self.ui_dist = Path(ui_dist) if ui_dist is not None else ENGINE_UI_DIST
         self.token = secrets.token_urlsafe(32)
         self.quiet = quiet
         self.stop_event = threading.Event()
@@ -684,14 +695,14 @@ def _pid_alive(pid) -> bool:
     return True
 
 
-def existing_service(out_root, repo_root=REPO_ROOT) -> dict | None:
-    """A registered service that is alive, for this repo, and answers its own health check."""
+def existing_service(out_root, repo_root=None) -> dict | None:
+    """A registered service that is alive, for this workspace, and answers its own health check."""
     doc = read_discovery(out_root)
     if not doc:
         return None
     if not _pid_alive(doc.get("pid")):
         return None
-    root = str(Path(repo_root).resolve())
+    root = str(Path(repo_root if repo_root is not None else workspace_root()).resolve())
     if doc.get("repoRoot") != root:
         return None
     port = doc.get("port")
@@ -713,23 +724,23 @@ def existing_service(out_root, repo_root=REPO_ROOT) -> dict | None:
     return doc
 
 
-def start_service(*, repo_root=REPO_ROOT, out_root=None, port: int = 0,
-                  quiet: bool = False) -> tuple[GuiService | None, dict]:
+def start_service(*, repo_root=None, out_root=None, port: int = 0,
+                  quiet: bool = False, ui_dist=ENGINE_UI_DIST) -> tuple[GuiService | None, dict]:
     """Reuse a healthy registered service, else start one and register it."""
-    root = Path(repo_root).resolve()
+    root = Path(repo_root if repo_root is not None else workspace_root()).resolve()
     out = Path(out_root) if out_root is not None else root / "out"
     existing = existing_service(out, root)
     if existing is not None:
         return None, existing
-    service = GuiService(repo_root=root, out_root=out, port=port, quiet=quiet)
+    service = GuiService(repo_root=root, out_root=out, ui_dist=ui_dist, port=port, quiet=quiet)
     service.start()
     return service, service.write_discovery()
 
 
 def run(*, port: int = 0, open_browser: bool = True, as_json: bool = False,
-        repo_root=REPO_ROOT, out_root=None) -> int:
+        repo_root=None, out_root=None) -> int:
     """``cad gui serve``: print the URL, then serve until SIGINT/SIGTERM."""
-    root = Path(repo_root).resolve()
+    root = Path(repo_root if repo_root is not None else workspace_root()).resolve()
     out = Path(out_root) if out_root is not None else root / "out"
     stop = threading.Event()
 
@@ -1510,11 +1521,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.service.events.unsubscribe(q)
 
     def _static(self, path: str) -> None:
-        dist = self.service.repo_root / "ui" / "dist"
+        dist = self.service.ui_dist
         index = dist / "index.html"
         if not index.is_file():
             if path in ("/", "/index.html"):
-                return self._send_html(200, _FALLBACK_PAGE)
+                return self._send_html(200, _fallback_page(dist))
             raise _HttpError(404, "not found")
         rel = path.lstrip("/") or "index.html"
         if "\\" in rel or "\x00" in rel:
