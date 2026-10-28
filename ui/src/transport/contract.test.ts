@@ -34,6 +34,8 @@ interface ServiceRequest {
   path: string;
   body: unknown;
   authorized: boolean;
+  /** The `Range` request header, or null. */
+  range: string | null;
 }
 
 interface ServiceAnswer {
@@ -54,12 +56,19 @@ class FakeService {
   private openers = new Set<() => void>();
   closedStreams = 0;
 
-  handle(method: string, path: string, rawBody: string | undefined, token: string | null): ServiceAnswer {
+  handle(
+    method: string,
+    path: string,
+    rawBody: string | undefined,
+    token: string | null,
+    range: string | null = null,
+  ): ServiceAnswer {
     const request: ServiceRequest = {
       method,
       path,
       body: rawBody ? JSON.parse(rawBody) : undefined,
       authorized: token === TOKEN,
+      range,
     };
     this.requests.push(request);
     if (!request.authorized) return { status: 401, statusText: "Unauthorized", json: { error: "bad token" } };
@@ -101,6 +110,7 @@ function makeBrowser(service: FakeService): { transport: CadStudioTransport; dis
       url.pathname + url.search,
       init.body as string | undefined,
       auth?.startsWith("Bearer ") ? auth.slice(7) : null,
+      headers.get("Range"),
     );
     if (answer.networkError) throw new TypeError(answer.networkError);
     return toResponse(answer);
@@ -148,7 +158,7 @@ function makeVsCode(service: FakeService): { transport: CadStudioTransport; disp
   const io: HttpIo = {
     async request(endpoint, route: HttpRoute) {
       const body = route.body === undefined ? undefined : JSON.stringify(route.body);
-      const answer = service.handle(route.method, route.path, body, endpoint.token);
+      const answer = service.handle(route.method, route.path, body, endpoint.token, route.headers?.Range ?? null);
       if (answer.networkError) throw new Error(answer.networkError);
       const bytes = answer.bytes ?? new TextEncoder().encode(answer.json === undefined ? "" : JSON.stringify(answer.json));
       return { status: answer.status, statusText: answer.statusText ?? "", bytes };
@@ -334,6 +344,124 @@ describe.each(FACTORIES)("transport contract: %s", (_name, factory) => {
     setup(() => ({ status: 200, json: inputs }));
     expect(await transport.listPhysicsInputs("pocky/syringe")).toEqual(inputs);
     expect(service.requests[0]).toMatchObject({ method: "GET", path: "/v1/models/pocky/syringe/physics-inputs" });
+  });
+
+  describe("follow and live", () => {
+    const LEASE = { model: "pocky/syringe", expiresAt: 100, leaseSeconds: 60, following: [] };
+    const LIVE_DOC = {
+      schemaVersion: 1,
+      units: "mm",
+      liveId: "pocky/runs/r1",
+      fps: 30,
+      t0: 0,
+      frames: 4,
+      simTime: 0.1,
+      plannedTime: 1,
+      bodies: [],
+      phases: [],
+      poses: { path: "poses.bin", dtype: "float32", byteOrder: "little", layout: "x", positionUnits: "mm", frameBytes: 28 },
+      done: false,
+      status: null,
+      runId: null,
+      error: null,
+    };
+
+    it("follow POSTs /v1/follow with {model} and returns the lease", async () => {
+      setup(() => ({ status: 200, json: LEASE }));
+      expect(await transport.follow("pocky/syringe")).toEqual(LEASE);
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]).toMatchObject({
+        method: "POST",
+        path: "/v1/follow",
+        body: { model: "pocky/syringe" },
+        authorized: true,
+      });
+    });
+
+    it("unfollow DELETEs /v1/follow with {model} and resolves with nothing", async () => {
+      setup(() => ({ status: 200, json: { following: [] } }));
+      expect(await transport.unfollow("pocky/syringe")).toBeUndefined();
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]).toMatchObject({ method: "DELETE", path: "/v1/follow", body: { model: "pocky/syringe" } });
+    });
+
+    it("follow and unfollow map a 404 like any other error", async () => {
+      setup(() => ({ status: 404, statusText: "Not Found", json: { error: "unknown model" } }));
+      const follow = await failure(transport.follow("pocky/nope"));
+      expect([follow.status, follow.message]).toEqual([404, "unknown model"]);
+      const unfollow = await failure(transport.unfollow("pocky/nope"));
+      expect([unfollow.status, unfollow.message]).toEqual([404, "unknown model"]);
+    });
+
+    it("listLive GETs /v1/live", async () => {
+      const lives = { lives: [{ liveId: "pocky/runs/r1", frames: 4, done: false, status: null, mtime: 5 }] };
+      setup(() => ({ status: 200, json: lives }));
+      expect(await transport.listLive()).toEqual(lives);
+      expect(service.requests[0]).toMatchObject({ method: "GET", path: "/v1/live", body: undefined, authorized: true });
+    });
+
+    it("getLive GETs /v1/live/<liveId> with each segment encoded", async () => {
+      setup(() => ({ status: 200, json: LIVE_DOC }));
+      expect(await transport.getLive("pocky/runs/r1")).toEqual(LIVE_DOC);
+      await transport.getLive("pocky/runs/a b");
+      expect(service.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+        "GET /v1/live/pocky/runs/r1",
+        "GET /v1/live/pocky/runs/a%20b",
+      ]);
+    });
+
+    it("getLive maps a 404 to {status, message}", async () => {
+      setup(() => ({ status: 404, statusText: "Not Found", json: { error: "no such live run" } }));
+      const error = await failure(transport.getLive("pocky/runs/r1"));
+      expect([error.status, error.message]).toEqual([404, "no such live run"]);
+    });
+
+    it("getArtifact with {offset} sends Range: bytes=N- and returns the tail bytes", async () => {
+      setup(() => ({ status: 206, bytes: BYTES.slice(4) }));
+      const buffer = await transport.getArtifact("pocky/runs/r1.live/poses.bin", { offset: 4 });
+      expect([...new Uint8Array(buffer)]).toEqual([...BYTES.slice(4)]);
+      expect(service.requests[0]).toMatchObject({ method: "GET", path: "/v1/artifacts/pocky/runs/r1.live/poses.bin", range: "bytes=4-" });
+    });
+
+    it("getArtifact without an offset, or with offset 0, sends no Range header", async () => {
+      setup(() => ({ status: 200, bytes: BYTES }));
+      await transport.getArtifact("a/b.bin");
+      await transport.getArtifact("a/b.bin", { offset: 0 });
+      expect(service.requests.map((r) => r.range)).toEqual([null, null]);
+    });
+
+    it("getArtifact answers a 416 on a ranged read with empty bytes", async () => {
+      setup(() => ({ status: 416, statusText: "Range Not Satisfiable", json: { error: "range not satisfiable" } }));
+      const buffer = await transport.getArtifact("a/b.bin", { offset: 10 });
+      expect(buffer).toBeInstanceOf(ArrayBuffer);
+      expect(buffer.byteLength).toBe(0);
+    });
+
+    it("getArtifact still fails a 416 when no offset was requested", async () => {
+      setup(() => ({ status: 416, statusText: "Range Not Satisfiable", json: { error: "range not satisfiable" } }));
+      const error = await failure(transport.getArtifact("a/b.bin"));
+      expect(error.status).toBe(416);
+    });
+
+    it("getArtifact with an offset still fails other errors", async () => {
+      setup(() => ({ status: 404, statusText: "Not Found", json: { error: "no such artifact" } }));
+      const error = await failure(transport.getArtifact("a/b.bin", { offset: 10 }));
+      expect([error.status, error.message]).toEqual([404, "no such artifact"]);
+    });
+
+    it("delivers a live artifact event identically", async () => {
+      setup();
+      const events: ServiceEvent[] = [];
+      cleanups.push(transport.subscribe((event) => events.push(event)));
+      await waitFor(() => events.length === 1);
+      service.emit("artifact", { kind: "live", liveId: "pocky/runs/r1", frames: 7, done: false });
+      service.emit("artifact", { kind: "live", liveId: "pocky/runs/r1", frames: 9, done: true, runId: "pocky/runs/r1" });
+      await waitFor(() => events.length === 3);
+      expect(events.slice(1)).toEqual([
+        { type: "artifact", kind: "live", liveId: "pocky/runs/r1", frames: 7, done: false },
+        { type: "artifact", kind: "live", liveId: "pocky/runs/r1", frames: 9, done: true },
+      ]);
+    });
   });
 
   describe("errors", () => {

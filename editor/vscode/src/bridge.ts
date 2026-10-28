@@ -97,7 +97,8 @@ export class HttpServiceClient implements ServiceClient {
         this.locator.invalidate(record);
         continue;
       }
-      return mapHttpResponse(answer.status, answer.statusText, answer.bytes, route.binary);
+      const ranged = route.headers !== undefined && "Range" in route.headers;
+      return mapHttpResponse(answer.status, answer.statusText, answer.bytes, route.binary, ranged);
     }
   }
 

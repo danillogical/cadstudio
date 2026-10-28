@@ -152,8 +152,25 @@ def _build(args) -> dict:
     if args.render:
         written.extend(_do_render(parts, p, project, outdir, args.views))
     results, report = _run_and_report(parts, p, project, outdir) if args.check else (None, None)
+    scene = None
+    if args.scene and not (results is not None and has_failures(results)):
+        scene = _write_build_scene(args, project, model, outdir)
     return {"project": project, "model": model, "outdir": outdir, "written": written,
-            "results": results, "report": report}
+            "results": results, "report": report, "scene": scene}
+
+
+def _write_build_scene(args, project: Project, model: str, outdir: Path) -> Path:
+    """Write the GUI scene to ``<outdir>/scene`` for ``cad build --scene``."""
+    # Function-local import: cadkit core must not import cadkit.gui at module load.
+    from .gui.scene import SceneError, write_scene
+
+    try:
+        state = write_scene(f"{project.name}/{model}", params_path=args.params,
+                            sets=_parse_sets(args.set), out=outdir / "scene")
+    except (SceneError, OSError) as exc:
+        raise SystemExit(f"scene export failed: {exc}") from None
+    print(f"wrote {state['scene']}")
+    return Path(state["scene"])
 
 
 def cmd_build(args) -> int:
@@ -180,6 +197,7 @@ def cmd_build(args) -> int:
         "written": [str(path) for path in state["written"]],
         "checks": _checks_json(results) if results is not None else None,
         "report": {k: str(v) for k, v in state["report"].items()} if state["report"] else None,
+        "scene": str(state["scene"]) if state["scene"] else None,
         "exit_code": code,
     })
     return code
@@ -673,11 +691,18 @@ def _physics_run(args) -> int:
             return fail(f"model {project.name}/{model} has no physics assembly; the project's "
                         f"physics hook returned None for this model")
         outdir = Path(args.out) if args.out else _fresh_run_dir(project, model, scenario.scenario_id)
+        live = None
+        if getattr(args, "live", True):
+            from .physics.live import DEFAULT_FPS, LiveWriter
+
+            live_fps = getattr(args, "live_fps", None)
+            live = LiveWriter(fps=DEFAULT_FPS if live_fps is None else live_fps)
         summary = run_assembly(spec, scenario, acceptance, outdir,
                                scenario_text=scenario.source_text,
                                acceptance_text=acceptance.source_text,
                                fixture_label=f"{project.name}/{model}",
-                               options_text=options_text, require_scenario_timestep=True)
+                               options_text=options_text, require_scenario_timestep=True,
+                               live=live)
     except SystemExit:
         return fail("unknown project or model")
     except (ScenarioError, SceneInvalid, PhysicsUnavailable, OSError, ValueError,
@@ -785,6 +810,8 @@ def main(argv: list[str] | None = None) -> int:
         if name == "build":
             sp.add_argument("--render", action="store_true")
             sp.add_argument("--check", action="store_true")
+            sp.add_argument("--scene", action="store_true",
+                            help="also write the GUI scene to <out>/scene (skipped if a check FAILs)")
             sp.add_argument("--json", action="store_true", help="print one JSON document on stdout")
         sp.set_defaults(fn=fn)
 
@@ -889,6 +916,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--set", action="append", metavar="KEY=VAL", help="override a parameter")
     run.add_argument("--out", help="run directory, must not exist (default "
                                    "out/<project>/<model>/physics/<scenario_id>/<run-id>)")
+    run.add_argument("--no-live", dest="live", action="store_false",
+                     help="do not stream poses to the <run>.live/ sidecar while running")
+    run.add_argument("--live-fps", type=float, default=None, metavar="N",
+                     help="live sidecar sample rate in sim frames per second (default 30)")
     run.set_defaults(fn=cmd_physics)
 
     replay = phys_sub.add_parser(

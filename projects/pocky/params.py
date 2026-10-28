@@ -40,6 +40,19 @@ class Separator:
 
 
 @dataclass(frozen=True)
+class Syringe3:
+    """The ``syringe3`` model: exit window, bore length, presentation distances and pusher plate band."""
+    exit_gap: float
+    bore_length: float
+    target_protrusion: float
+    min_protrusion: float
+    min_past_shelf: float
+    plate_z0: float
+    plate_h: float
+    slot_h: float
+
+
+@dataclass(frozen=True)
 class Structure:
     """Wall thickness."""
     min_wall: float
@@ -51,6 +64,7 @@ class Params(Overridable):
     packet: Packet
     magazine: Magazine
     separator: Separator
+    syringe3: Syringe3
     structure: Structure
     printer: Printer
     material: Material

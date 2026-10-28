@@ -74,7 +74,23 @@ function parseBody(raw: unknown, index: number): TrajectoryBody {
       pose: pose as TrajectoryBody["meshes"][number]["pose"],
     };
   });
-  return { name, fixed: raw.fixed, meshes };
+  let removedAt: number | null = null;
+  if (raw.removedAt !== undefined && raw.removedAt !== null) {
+    removedAt = finite(raw.removedAt, `bodies[${index}].removedAt`);
+  }
+  return { name, fixed: raw.fixed, meshes, removedAt };
+}
+
+/** A body's `removedAt` as a number or `null`; anything that is not a finite number is `null`. */
+export function removedAtOf(body: Pick<TrajectoryBody, "removedAt">): number | null {
+  const value = body.removedAt;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** Whether a body is shown at sim time `t`: a removed body is hidden from `removedAt` on. */
+export function bodyVisibleAt(body: Pick<TrajectoryBody, "removedAt">, t: number): boolean {
+  const removedAt = removedAtOf(body);
+  return removedAt === null || t < removedAt;
 }
 
 function parseContactsInfo(raw: unknown): ContactsInfo | null {
@@ -312,18 +328,24 @@ export function interpolatePose(a: Pose, b: Pose, alpha: number): Pose {
 /**
  * Every body's pose at sim time `t`, interpolated between the two surrounding frames.
  * `t` is clamped to the recorded range, so the first and last frames are returned exactly.
+ * `bodies` (index-aligned, optional) holds each body's `removedAt`: a body whose next frame
+ * is at or after its removal keeps the earlier frame's pose instead of blending toward it.
  */
 export function posesAt(
   times: ArrayLike<number>,
   poses: Float32Array,
   bodyCount: number,
   t: number,
+  bodies: readonly Pick<TrajectoryBody, "removedAt">[] = [],
 ): Pose[] {
   const sample = frameAt(times, t);
   const out: Pose[] = [];
   for (let body = 0; body < bodyCount; body += 1) {
     const a = readPose(poses, bodyCount, sample.index, body);
-    if (sample.next === sample.index || sample.alpha === 0) {
+    // A removed body's later frames hold its off-scene parking pose: never blend toward it.
+    const removedAt = bodies[body] ? removedAtOf(bodies[body]) : null;
+    const parkedNext = removedAt !== null && times[sample.next] >= removedAt;
+    if (sample.next === sample.index || sample.alpha === 0 || parkedNext) {
       out.push({ position: a.position, quaternion: normalizeQuat(a.quaternion) });
     } else {
       out.push(interpolatePose(a, readPose(poses, bodyCount, sample.next, body), sample.alpha));

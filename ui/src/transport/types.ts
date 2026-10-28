@@ -104,6 +104,12 @@ export interface TrajectoryBody {
   /** Welded to the world, so its pose never changes. */
   fixed: boolean;
   meshes: TrajectoryMesh[];
+  /**
+   * Sim seconds at which a scenario `remove_body` took the body out of the scene; it is hidden
+   * at every time `>= removedAt`. `null` (or absent, in exports that predate the field) when
+   * the body is never removed.
+   */
+  removedAt?: number | null;
 }
 
 /** A scenario phase span in sim seconds. */
@@ -186,10 +192,60 @@ export interface StartRunRequest {
   options?: string;
 }
 
+/** `POST /v1/follow`: the follow lapses `leaseSeconds` after the last POST, so re-POST to renew. */
+export interface FollowLease {
+  model: string;
+  expiresAt: number;
+  leaseSeconds: number;
+  following: unknown;
+}
+
+/** One row of `GET /v1/live`, newest first. */
+export interface LiveSummary {
+  liveId: string;
+  frames: number;
+  done: boolean;
+  status: string | null;
+  /** `live.json` mtime in epoch seconds. */
+  mtime: number | null;
+}
+
+export interface LiveList {
+  lives: LiveSummary[];
+}
+
+/** `live.json`: a running `cad physics run`'s poses, frame `k` at `t0 + k / fps`. */
+export interface LiveDoc {
+  schemaVersion: number;
+  units: string;
+  liveId: string | null;
+  fps: number;
+  t0: number | null;
+  /** Complete frames in `poses.bin`; the only count to trust. */
+  frames: number;
+  simTime: number | null;
+  plannedTime: number | null;
+  /** Same shape as `trajectory.json` bodies; mesh paths are relative to the `.live` dir. Empty while frames is 0. */
+  bodies: TrajectoryBody[];
+  /** `t1` is null for the phase still running. */
+  phases: { name: string; t0: number; t1: number | null }[];
+  poses: { path: string; dtype: string; byteOrder: string; layout: string; positionUnits: string; frameBytes: number };
+  done: boolean;
+  status: string | null;
+  runId: string | null;
+  error: string | null;
+}
+
+/** Fetch an artifact from byte `offset` on (`Range: bytes=offset-`); empty when `offset` is the size. */
+export interface ArtifactRange {
+  offset: number;
+}
+
 export type ServiceEvent =
   | { type: "job"; job: Job }
   | { type: "artifact"; kind: "scene"; model: string }
   | { type: "artifact"; kind: "run"; runId: string }
+  | { type: "artifact"; kind: "live"; liveId: string; frames: number; done: boolean }
   | { type: "connection"; state: "open" | "error" };
 
 /** A failed request; `status` is 0 for a network/transport failure. */
@@ -220,6 +276,11 @@ export interface CadStudioTransport {
   getJob(id: string): Promise<Job>;
   cancelJob(id: string): Promise<Job>;
   subscribe(listener: (event: ServiceEvent) => void): () => void;
-  /** Bytes of an `out/`-relative artifact path (a scene GLB, `poses.bin`, ...). */
-  getArtifact(path: string): Promise<ArrayBuffer>;
+  /** Start or renew following `model` (`<project>/<model>`): source edits rebuild it. */
+  follow(model: string): Promise<FollowLease>;
+  unfollow(model: string): Promise<void>;
+  listLive(): Promise<LiveList>;
+  getLive(liveId: string): Promise<LiveDoc>;
+  /** Bytes of an `out/`-relative artifact path (a scene GLB, `poses.bin`, ...); `range` reads a tail. */
+  getArtifact(path: string, range?: ArtifactRange): Promise<ArrayBuffer>;
 }

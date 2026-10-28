@@ -47,6 +47,18 @@ this path.
 The fixed floor is an intentional analytic test fixture. It is not a product restraint and
 does not make the result a diagnostic-only run.
 
+## Live monitoring
+
+Open the panel once, then keep working in the terminal:
+
+```
+uv run --frozen --extra physics cad gui open pocky/syringe
+```
+
+Keep **Follow** on in the panel (it is on by default). While it is on, edits to the shown model's sources under `projects/<project>/` rebuild that model in the service, and the panel picks up the new scene. A `cad physics run` appears as a live run: its poses stream into the panel while it steps, and when it finishes the panel swaps to the final trajectory and loops it.
+
+Scene writes and new runs under `out/` are shown whatever started them, so an agent's builds and sims show up in the panel too. Pass `--no-live` to `cad physics run` to skip the live stream; the finished run is still written. If the panel closes, the service drops the follow 60 s after its last renewal.
+
 ## Pocky project
 
 The printed prototype CAD and motion proof are in

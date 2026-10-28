@@ -111,7 +111,11 @@ function failure(error) {
 function serviceRequest(endpoint, route, signal) {
   return new Promise((resolve, reject) => {
     const body = route.body === void 0 ? void 0 : Buffer.from(JSON.stringify(route.body), "utf8");
+    const routeHeaders = Object.fromEntries(
+      Object.entries(route.headers ?? {}).filter(([name]) => name.toLowerCase() !== "authorization")
+    );
     const headers = {
+      ...routeHeaders,
       Authorization: `Bearer ${endpoint.token}`,
       Accept: route.binary ? "*/*" : "application/json"
     };
@@ -226,7 +230,11 @@ var TRANSPORT_METHODS = [
   "startRun",
   "getJob",
   "cancelJob",
-  "getArtifact"
+  "getArtifact",
+  "follow",
+  "unfollow",
+  "listLive",
+  "getLive"
 ];
 var SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
 var MAX_PATH_LENGTH = 1024;
@@ -302,11 +310,28 @@ function jobIdArg(value) {
   }
   return value;
 }
+function followArg(value) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["model"])) throw new Invalid("request must be {model}");
+  return modelArg(value.model);
+}
+function liveIdArg(value) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["liveId"])) throw new Invalid("request must be {liveId}");
+  return pathArg(value.liveId, "liveId");
+}
+function offsetArg(value) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["offset"])) throw new Invalid("range must be {offset}");
+  const offset = value.offset;
+  if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) {
+    throw new Invalid("offset must be a non-negative integer");
+  }
+  return offset;
+}
 function validateCall(method, args) {
   switch (method) {
     case "health":
     case "listModels":
     case "listRuns":
+    case "listLive":
       requireArity(args, 0);
       return { method };
     case "getScene":
@@ -329,9 +354,19 @@ function validateCall(method, args) {
     case "cancelJob":
       requireArity(args, 1);
       return { method, id: jobIdArg(args[0]) };
-    case "getArtifact":
+    case "getArtifact": {
+      requireArity(args, 1, 2);
+      const call = { method, path: pathArg(args[0], "artifact path") };
+      if (args.length === 2) call.offset = offsetArg(args[1]);
+      return call;
+    }
+    case "follow":
+    case "unfollow":
       requireArity(args, 1);
-      return { method, path: pathArg(args[0], "artifact path") };
+      return { method, ...followArg(args[0]) };
+    case "getLive":
+      requireArity(args, 1);
+      return { method, liveId: liveIdArg(args[0]) };
   }
 }
 function parseWebviewMessage(raw) {
@@ -410,8 +445,19 @@ function routeFor(call) {
       return json("GET", `/v1/jobs/${encodeURIComponent(call.id)}`);
     case "cancelJob":
       return json("POST", `/v1/jobs/${encodeURIComponent(call.id)}/cancel`);
-    case "getArtifact":
-      return { method: "GET", path: `/v1/artifacts/${encodePath(call.path)}`, binary: true };
+    case "getArtifact": {
+      const path = `/v1/artifacts/${encodePath(call.path)}`;
+      if (call.offset === void 0) return { method: "GET", path, binary: true };
+      return { method: "GET", path, binary: true, headers: { Range: `bytes=${call.offset}-` } };
+    }
+    case "follow":
+      return json("POST", "/v1/follow", { model: `${call.project}/${call.model}` });
+    case "unfollow":
+      return json("DELETE", "/v1/follow", { model: `${call.project}/${call.model}` });
+    case "listLive":
+      return json("GET", "/v1/live");
+    case "getLive":
+      return json("GET", `/v1/live/${encodePath(call.liveId)}`);
   }
 }
 function parseJson(text) {
@@ -427,9 +473,10 @@ function exactArrayBuffer(bytes) {
   copy.set(bytes);
   return copy.buffer;
 }
-function mapHttpResponse(status, statusText, bytes, binary) {
+function mapHttpResponse(status, statusText, bytes, binary, ranged = false) {
   const ok = status >= 200 && status < 300;
   if (ok && binary) return { ok: true, result: exactArrayBuffer(bytes) };
+  if (status === 416 && binary && ranged) return { ok: true, result: new ArrayBuffer(0) };
   const body = parseJson(new TextDecoder().decode(bytes));
   if (!ok) {
     const detail = isRecord(body) && typeof body.error === "string" ? body.error : null;
@@ -622,7 +669,8 @@ var HttpServiceClient = class {
         this.locator.invalidate(record);
         continue;
       }
-      return mapHttpResponse(answer.status, answer.statusText, answer.bytes, route.binary);
+      const ranged = route.headers !== void 0 && "Range" in route.headers;
+      return mapHttpResponse(answer.status, answer.statusText, answer.bytes, route.binary, ranged);
     }
   }
   async openEvents(handlers, options) {
@@ -1039,7 +1087,7 @@ var GuiPanels = class {
   open() {
     if (this.refused()) return void 0;
     if (this.panel) {
-      this.panel.reveal();
+      this.panel.reveal(this.panel.viewColumn, true);
       return this.panel;
     }
     const index = this.readIndex();
@@ -1047,7 +1095,7 @@ var GuiPanels = class {
     const panel = vscode2.window.createWebviewPanel(
       VIEW_TYPE,
       "CADStudio",
-      vscode2.ViewColumn.Active,
+      { viewColumn: vscode2.ViewColumn.Active, preserveFocus: true },
       panelOptions(this.context.extensionUri)
     );
     this.attach(panel, index);
@@ -1061,7 +1109,7 @@ var GuiPanels = class {
     }
     if (this.panel && this.panel !== panel) {
       panel.dispose();
-      this.panel.reveal();
+      this.panel.reveal(this.panel.viewColumn, true);
       return;
     }
     const index = this.readIndex();

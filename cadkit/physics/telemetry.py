@@ -15,6 +15,14 @@ them.
 The state archive contains the full integration state needed by a later deterministic replay
 (``time``, ``qpos``, ``qvel``, ``act``, ``ctrl``, ``qacc_warmstart``, applied forces and
 mocap), not just ``qpos``/``qvel``. It is a compressed NumPy archive, never pickle.
+
+Body removal (a scenario phase's ``remove_body``) is the one declared write after reset. At
+the start of that phase the free body is parked at a fixed pose, its velocity is zeroed and
+contacts are disabled on its geoms (``geom_contype``/``geom_conaffinity`` set to 0 on this
+run's model). After every later ``mj_step`` its ``qpos`` and ``qvel`` are written back to the
+parked values, so every recorded state holds exactly the parking pose. Pinning is explicit
+rather than gravity compensation because MuJoCo skips ``body_gravcomp`` entirely when the
+compiled model had none, and an exact cancellation of gravity is not guaranteed bit-for-bit.
 """
 from __future__ import annotations
 
@@ -145,6 +153,55 @@ def pose_delta(p_rel_0, rotation_rel_0, p_rel_1, rotation_rel_1
 
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 
+#: A removed body's COM is parked this far from the world origin, on the plane through the
+#: origin perpendicular to gravity: ``(-10, k, 0)`` m for gravity along -Z, with ``k`` the
+#: body's 0-based removal order. Its gravitational potential energy there is zero and its
+#: velocity is zero, so it adds nothing to ``data.energy``, and it is far outside any scene.
+PARK_DISTANCE_M = 10.0
+#: Spacing between successive parked bodies, so two removed bodies never overlap.
+PARK_SPACING_M = 1.0
+
+
+def parking_com(gravity, order: int) -> np.ndarray:
+    """World COM of the ``order``-th removed body; see :data:`PARK_DISTANCE_M`."""
+    g = np.asarray(gravity, dtype=np.float64)
+    norm = float(np.linalg.norm(g))
+    down = g / norm if norm > 0.0 else np.array([0.0, 0.0, -1.0])
+    # -X projected off gravity, or -Y when gravity is (nearly) along X.
+    for axis in ((-1.0, 0.0, 0.0), (0.0, -1.0, 0.0)):
+        along = np.asarray(axis) - float(np.dot(axis, down)) * down
+        if float(np.linalg.norm(along)) >= 0.5:
+            break
+    along /= float(np.linalg.norm(along))
+    side = np.cross(down, along)
+    return PARK_DISTANCE_M * along + PARK_SPACING_M * int(order) * side
+
+
+def parked_qpos(mujoco, model, body_id: int, order: int) -> np.ndarray:
+    """Free-joint ``qpos`` (pos + identity quat) that puts the body's COM at its parking spot."""
+    qpos = np.zeros(7, dtype=np.float64)
+    qpos[:3] = parking_com(model.opt.gravity, order) - np.asarray(
+        model.body_ipos[body_id], dtype=np.float64)
+    qpos[3] = 1.0
+    return qpos
+
+
+def subtree_geoms(model, body_id: int) -> np.ndarray:
+    """Geom ids on ``body_id`` and every body below it."""
+    parents = np.asarray(model.body_parentid)
+    inside = np.zeros(int(model.nbody), dtype=bool)
+    inside[body_id] = True
+    for b in range(body_id + 1, int(model.nbody)):
+        inside[b] = inside[int(parents[b])]
+    return np.flatnonzero(inside[np.asarray(model.geom_bodyid)])
+
+
+def disable_contacts(model, body_id: int) -> None:
+    """Remove the body's subtree geoms from collision; this mutates ``model``."""
+    geoms = subtree_geoms(model, body_id)
+    model.geom_contype[geoms] = 0
+    model.geom_conaffinity[geoms] = 0
+
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -162,11 +219,14 @@ class Snapshot:
                 "hash": self.hash}
 
 
-def body_force_command(mujoco, model, phase: "PhaseSpec", steps: int):
+def body_force_command(mujoco, model, phase: "PhaseSpec", steps: int, data=None):
     """``force_at(step) -> (nbody, 6)`` xfrc_applied for a ``body_force`` phase, else ``None``.
 
     The force is world-frame at the body COM (MuJoCo's ``xfrc_applied`` point); torque is zero.
-    Replay recomputes it through this function, so run and replay cannot disagree.
+    Replay recomputes it through this function, so run and replay cannot disagree. With
+    ``damping_n_s_m`` the force also depends on the body's COM velocity, read from ``data``
+    (``qpos``/``qvel`` only, before the step) when ``force_at`` is called; see
+    :class:`cadkit.physics.scenario.BodyForceSpec` for the formula.
     """
     if phase.body_force is None:
         return None
@@ -174,10 +234,40 @@ def body_force_command(mujoco, model, phase: "PhaseSpec", steps: int):
     if body_id < 0:
         raise ValueError(f"model has no body {phase.body_force.body!r}")
     nbody = int(model.nbody)
+    damping = phase.body_force.damping_n_s_m or 0.0
+    if damping > 0.0:
+        if data is None:
+            raise ValueError("body_force damping_n_s_m needs the MjData to read the velocity")
+        if int(model.body_jntnum[body_id]) != 1 or int(
+                model.jnt_type[model.body_jntadr[body_id]]) != int(mujoco.mjtJoint.mjJNT_FREE):
+            raise ValueError(f"body_force damping needs {phase.body_force.body!r} to be a "
+                             f"free body")
+        qadr = int(model.jnt_qposadr[model.body_jntadr[body_id]])
+        dadr = int(model.jnt_dofadr[model.body_jntadr[body_id]])
+        ipos = np.array(model.body_ipos[body_id], dtype=np.float64)
+
+    def com_velocity() -> np.ndarray:
+        # Free-joint qvel is the body-origin linear velocity (world) and angular velocity
+        # (body frame); shift to the COM with v + w x (R ipos).
+        quat = np.array(data.qpos[qadr + 3:qadr + 7], dtype=np.float64)
+        omega_local = np.array(data.qvel[dadr + 3:dadr + 6], dtype=np.float64)
+        omega = np.zeros(3)
+        offset = np.zeros(3)
+        mujoco.mju_rotVecQuat(omega, omega_local, quat)
+        mujoco.mju_rotVecQuat(offset, ipos, quat)
+        return np.array(data.qvel[dadr:dadr + 3], dtype=np.float64) + np.cross(omega, offset)
 
     def force_at(step: int):
         xfrc = np.zeros((nbody, 6), dtype=np.float64)
-        xfrc[body_id, :3] = phase.body_force.force_at(step, steps)
+        force = phase.body_force.force_at(step, steps)
+        if damping > 0.0:
+            ramp = np.asarray(force, dtype=np.float64)
+            magnitude = float(np.linalg.norm(ramp))
+            if magnitude > 0.0:
+                unit = ramp / magnitude
+                force = unit * max(magnitude - damping * float(np.dot(com_velocity(), unit)),
+                                   0.0)
+        xfrc[body_id, :3] = force
         return xfrc
 
     return force_at
@@ -200,6 +290,7 @@ class PhaseTelemetry:
     body_force_body: str | None = None
     requested_force_n: tuple[float, float, float] | None = None
     requested_force_end_n: tuple[float, float, float] | None = None
+    removed_body: str | None = None
     effort_units: str = ""
     ctrl_requested: float | None = None
     ctrl_effective_peak: float | None = None
@@ -213,6 +304,8 @@ class PhaseTelemetry:
             out["requested_force_n"] = list(self.requested_force_n)
             if self.requested_force_end_n is not None:
                 out["requested_force_end_n"] = list(self.requested_force_end_n)
+        if self.removed_body is not None:
+            out["removed_body"] = self.removed_body
         return out
 
     def _base_dict(self) -> dict:
@@ -319,10 +412,22 @@ class TelemetryRecorder:
                  max_state_bytes: int | None = None,
                  events: tuple = (), checks: tuple = (),
                  gravity_m_s2: tuple[float, float, float] =
-                 (0.0, 0.0, -9.80665)):
+                 (0.0, 0.0, -9.80665), observer=None, removal_observer=None):
+        """``observer(data, phase_name)``, when given, sees every accepted state read-only.
+
+        ``data`` is the observed ``MjData`` (forwarded, so ``xpos``/``xquat`` belong to the
+        state's own time). It is called after the initial state and after each accepted step,
+        never for a rejected state; an observer that raises is dropped, never fatal.
+        ``removal_observer(body_name, time_s)`` is told when a body is removed; it is
+        dropped the same way if it raises.
+        """
         self.mujoco = mujoco
         self.model = model
         self.data = data
+        self.observer = observer
+        self.removal_observer = removal_observer
+        #: Removed bodies by name: ``{"qadr", "dof", "qpos", "time_s", "phase"}``.
+        self.removed: dict[str, dict] = {}
         self.scratch = mujoco.MjData(model)
         self.event_tracker = (EventTracker(events, gravity_m_s2=gravity_m_s2)
                               if events else None)
@@ -633,7 +738,7 @@ class TelemetryRecorder:
     # ------------------------------------------------------------------ phases
     def begin_phase(self, phase: PhaseTelemetry, ctrl_by_actuator: dict[str, float],
                     effort_by_actuator: dict[str, float], command_at=None,
-                    force_at=None) -> None:
+                    force_at=None, remove_body: str | None = None) -> None:
         """``effort_by_actuator`` is the requested effort after the actuator's own bound.
 
         The runner clamps to ``ActuatorSpec.max_effort`` here, so a million-unit request is
@@ -642,6 +747,8 @@ class TelemetryRecorder:
         per-step command of a ramped phase; ``None`` keeps the constant command.
         ``force_at(step) -> (nbody, 6)`` array supplies the external ``xfrc_applied`` of a
         ``body_force`` phase; ``xfrc_applied`` is zeroed at every phase boundary.
+        ``remove_body`` removes that body (see :meth:`remove_body`) once the phase has begun,
+        before its first step.
         """
         self._phase = phase
         self._command_at = command_at
@@ -663,6 +770,42 @@ class TelemetryRecorder:
             self.event_tracker.begin_phase(
                 phase.name, phase.kind, phase.start_time_s, ctrl_zero,
                 boundary=self._event_boundary_observation(phase))
+        if remove_body is not None:
+            phase.removed_body = remove_body
+            self.remove_body(remove_body)
+
+    def remove_body(self, name: str) -> None:
+        """Park free body ``name``, zero its velocity and disable its contacts.
+
+        It is pinned to the parking pose after every later step (:meth:`_pin_removed`). Replay
+        calls this directly for a body removed before its restored checkpoint row: the row
+        already holds the parked state, so rewriting it is a no-op, and the model mutation
+        and pinning are what must be re-established.
+        """
+        if name in self.removed:
+            raise ValueError(f"body {name!r} is already removed")
+        body_id = self._body_ids.get(name)
+        joint = next((j for j in self.free_joints if j[3] == body_id), None)
+        if body_id is None or joint is None:
+            raise ValueError(f"cannot remove {name!r}: it is not a free body of the model")
+        _, dof, qadr, _ = joint
+        qpos = parked_qpos(self.mujoco, self.model, body_id, len(self.removed))
+        disable_contacts(self.model, body_id)
+        t = float(self.data.time)
+        self.removed[name] = {"qadr": qadr, "dof": dof, "qpos": qpos, "time_s": t,
+                              "phase": self._phase_label()}
+        self._pin_removed(self.data)
+        if self.removal_observer is not None:
+            try:
+                self.removal_observer(name, t)
+            except Exception:
+                self.removal_observer = None
+
+    def _pin_removed(self, data) -> None:
+        """Write every removed body back to its parking pose at rest."""
+        for entry in self.removed.values():
+            data.qpos[entry["qadr"]:entry["qadr"] + 7] = entry["qpos"]
+            data.qvel[entry["dof"]:entry["dof"] + 6] = 0.0
 
     def _event_boundary_observation(self, phase: PhaseTelemetry):
         """The coherent pre-step state at a phase boundary, or ``None``.
@@ -778,7 +921,18 @@ class TelemetryRecorder:
             return False
         self._append_trace_row(requested={}, stored={}, force_stage="initial_forward")
         self.snapshot("initial")
+        if ok:
+            self._notify(observed)
         return ok
+
+    def _notify(self, observed) -> None:
+        """Hand an accepted state to the observer; a failing observer is dropped."""
+        if self.observer is None:
+            return
+        try:
+            self.observer(observed, self._phase_label())
+        except Exception:
+            self.observer = None
 
     def _check_live_numerics(self, stage: str) -> bool:
         """Inspect integrator outputs before observational forward can replace them.
@@ -828,6 +982,8 @@ class TelemetryRecorder:
             if mocap_quat is not None:
                 data.mocap_quat[:] = np.asarray(mocap_quat, dtype=np.float64)
         self.mujoco.mj_step(self.model, data)
+        if self.removed:
+            self._pin_removed(data)
         self._step_index += 1
         if phase is not None:
             phase.actual_steps += 1
@@ -848,7 +1004,11 @@ class TelemetryRecorder:
             return False
         if self._step_index % self.sample_every == 0:
             self._append_trace_row(requested=requested, stored=stored)
-        return self._append_state_row()
+        if not self._append_state_row():
+            return False
+        if self.observer is not None:
+            self._notify(observed)
+        return True
 
     def step(self, n: int) -> None:
         data = self.data

@@ -693,6 +693,16 @@ def _replay_steps(mujoco, model, verified: VerifiedRun, *, start_row: int,
     phase_index = state["phase_index"]
     if start_row == 0:
         recorder.record_initial(phase_names[0])
+    # Removal is recomputed from the scenario, never read from the archive. A phase whose first
+    # row is at or before the restored row already removed its body in the source run: the
+    # row holds the parked state, so only the contact mutation and pinning are re-established.
+    for p in range(1, len(phase_names)):
+        phase_spec = next((ph for ph in verified.scenario.phases
+                           if ph.name == phase_names[p]), None)
+        rows_p = np.flatnonzero(phase_index == p)
+        if (phase_spec is not None and phase_spec.remove_body is not None
+                and rows_p.size and int(rows_p[0]) <= start_row):
+            recorder.remove_body(phase_spec.remove_body)
     replayed_rows = [np.array(state["integration_state"][start_row])]
     allow_nonfinite = verified.summary.get("status") != "PASS"
     for p in range(1, len(phase_names)):
@@ -720,12 +730,14 @@ def _replay_steps(mujoco, model, verified: VerifiedRun, *, start_row: int,
         plan_steps = int(next(item["steps"] for item in plan["phases"]
                               if item["name"] == phase_names[p]))
         # An external body force is recomputed from the scenario, never read from the archive.
-        force_at = body_force_command(mujoco, model, phase_spec, plan_steps)
+        force_at = body_force_command(mujoco, model, phase_spec, plan_steps, data)
         if force_at is not None:
             progress.body_force_body = phase_spec.body_force.body
             progress.requested_force_n = phase_spec.body_force.force_n
             progress.requested_force_end_n = phase_spec.body_force.force_end_n
-        recorder.begin_phase(progress, ctrl_map, bounded)
+        recorder.begin_phase(progress, ctrl_map, bounded,
+                             remove_body=(phase_spec.remove_body
+                                          if phase_rows[0] > start_row else None))
         ramp = None
         if (phase_spec.kind == "actuate" and phase_spec.effort_end is not None
                 and phase_spec.actuator in solver["actuators"]):

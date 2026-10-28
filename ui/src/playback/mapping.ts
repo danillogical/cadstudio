@@ -2,8 +2,8 @@
 import { Box3, Color, Group, Mesh, MeshStandardMaterial, Object3D } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { PART_ID_KEY, tagMeshes, type LoadedScene } from "../scene/mapping";
-import type { TrajectoryDoc } from "../transport/types";
-import type { Pose } from "./frames";
+import type { TrajectoryBody, TrajectoryDoc } from "../transport/types";
+import { bodyVisibleAt, type Pose } from "./frames";
 
 /** Body colours, cycled by body index. */
 export const BODY_COLORS = ["#6f9a86", "#c98b4f", "#5f86b5", "#b56f8c", "#9a9a5f", "#7f6fb5", "#5fa8a8"];
@@ -28,6 +28,30 @@ export function applyPose(object: Object3D, pose: Pose): void {
 export function applyPoses(bodies: readonly Object3D[], poses: readonly Pose[]): void {
   const n = Math.min(bodies.length, poses.length);
   for (let k = 0; k < n; k += 1) applyPose(bodies[k], poses[k]);
+}
+
+/** Show or hide every body for sim time `t`; a removed body is hidden from its `removedAt` on. */
+export function applyVisibility(
+  bodies: readonly Object3D[],
+  docBodies: readonly Pick<TrajectoryBody, "removedAt">[],
+  t: number,
+): void {
+  const n = Math.min(bodies.length, docBodies.length);
+  for (let k = 0; k < n; k += 1) bodies[k].visible = bodyVisibleAt(docBodies[k], t);
+}
+
+/**
+ * World bounds of the shown bodies only. A removed body is parked metres away, so counting
+ * a hidden one would shrink the model to a dot in any fit.
+ */
+export function visibleBodyBounds(bodies: readonly Object3D[]): Box3 {
+  const box = new Box3();
+  for (const body of bodies) {
+    if (!body.visible) continue;
+    body.updateWorldMatrix(true, true);
+    box.expandByObject(body);
+  }
+  return box;
 }
 
 /** Make one body see-through (or opaque again). */
@@ -92,6 +116,16 @@ export async function buildTrajectoryGroup(
     root.add(group);
   }
 
+  // Removed bodies are hidden before the first frame, so neither these bounds nor any fit
+  // ever includes one.
+  if (doc.times.length) applyVisibility(bodies, doc.bodies, doc.times[0]);
   root.updateMatrixWorld(true);
-  return { root, parts, bounds: new Box3().setFromObject(root), bodies, materials };
+  return {
+    root,
+    parts,
+    bounds: visibleBodyBounds(bodies),
+    fitBounds: () => visibleBodyBounds(bodies),
+    bodies,
+    materials,
+  };
 }

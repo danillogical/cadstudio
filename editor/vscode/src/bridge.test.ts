@@ -81,6 +81,10 @@ describe("PanelBridge: validation gate", () => {
       ["getJob", ["j"]],
       ["cancelJob", ["j"]],
       ["getArtifact", ["p/m/scene/scene.glb"]],
+      ["follow", [{ model: "p/m" }]],
+      ["unfollow", [{ model: "p/m" }]],
+      ["listLive", []],
+      ["getLive", [{ liveId: "p/runs/r1" }]],
     ];
     expect(calls.map(([m]) => m).sort()).toEqual([...TRANSPORT_METHODS].sort());
     let id = 1;
@@ -97,6 +101,10 @@ describe("PanelBridge: validation gate", () => {
       "GET /v1/jobs/j",
       "POST /v1/jobs/j/cancel",
       "GET /v1/artifacts/p/m/scene/scene.glb",
+      "POST /v1/follow",
+      "DELETE /v1/follow",
+      "GET /v1/live",
+      "GET /v1/live/p/runs/r1",
     ]);
   });
 });

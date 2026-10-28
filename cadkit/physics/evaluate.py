@@ -234,6 +234,13 @@ def resolve_references(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
             vectors = (phase.body_force.force_n, phase.body_force.force_end_n or ())
             if not all(math.isfinite(v) for vec in vectors for v in vec):
                 raise ScenarioError(f"scenario phase {phase.name!r}: non-finite body_force")
+        if phase.remove_body is not None:
+            if phase.remove_body not in bodies:
+                raise ScenarioError(f"scenario phase {phase.name!r}: remove_body names "
+                                    f"unknown body {phase.remove_body!r}")
+            if phase.remove_body not in free_bodies:
+                raise ScenarioError(f"scenario phase {phase.name!r}: remove_body body "
+                                    f"{phase.remove_body!r} is not a free body")
         if phase.kind != "actuate":
             continue
         if phase.actuator not in actuators:
@@ -245,6 +252,52 @@ def resolve_references(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
         if phase.effort_end is not None and not math.isfinite(phase.effort_end):
             raise ScenarioError(f"scenario phase {phase.name!r}: non-finite effort_end")
         _ = actuator  # bounds are enforced by the runner and the emitted ctrlrange
+    _reject_removed_observations(scenario, acceptance, phase_order)
+
+
+def _reject_removed_observations(scenario: ScenarioSpec, acceptance: AcceptanceSpec,
+                                 phase_order: dict[str, int]) -> None:
+    """A removed body is parked off-scene, so nothing may measure it once it is gone.
+
+    Removal happens at the start of its phase, so a check whose evaluated phase (or a event
+    whose window) reaches that phase would see the parking pose and is rejected. Whole-run
+    contact checks stay admissible: a removed body has contacts disabled, so it only stops
+    contributing.
+    """
+    removals = scenario.removals()
+    if not removals:
+        return
+    order = dict(phase_order)
+    order["initial"] = -1
+
+    def removed_by(body: str, last_phase: str) -> str | None:
+        index = removals.get(body)
+        if index is None or order[last_phase] < index:
+            return None
+        return scenario.phases[index].name
+
+    for check in acceptance.checks:
+        if check.kind == "body_speed":
+            observed = ((check.body, check.phase),)
+        elif check.kind == "relative_pose":
+            observed = ((check.body_a, check.phase), (check.body_b, check.phase))
+        elif check.kind == "relative_translation":
+            observed = ((check.body_a, check.to_phase), (check.body_b, check.to_phase))
+        else:
+            continue
+        for body, last_phase in observed:
+            phase = removed_by(body, last_phase)
+            if phase is not None:
+                raise ScenarioError(
+                    f"acceptance check {check.name!r}: body {body!r} is removed at the start "
+                    f"of phase {phase!r} and cannot be measured in {last_phase!r}")
+    for event in acceptance.events:
+        for body in (*event.bodies, *event.support_bodies):
+            phase = removed_by(body, event.window_to)
+            if phase is not None:
+                raise ScenarioError(
+                    f"acceptance event {event.name!r}: body {body!r} is removed at the start "
+                    f"of phase {phase!r}, inside the event window ending {event.window_to!r}")
 
 
 def _reason(stage: str, reason: str, time_s: float | None = None) -> dict:

@@ -20,9 +20,13 @@ def _ghost_meshes(p):
 
 
 def _physics(model_name, p):
-    """Lazy physics assembly: the ``prototype`` and ``syringe`` models have one."""
+    """Lazy physics assembly: the ``prototype``, ``syringe`` and ``syringe3`` models have one."""
     if model_name == "syringe":
         from .physics.syringe_assembly import syringe_assembly
+
+        return syringe_assembly(p)
+    if model_name == "syringe3":
+        from .physics.syringe3_assembly import syringe_assembly
 
         return syringe_assembly(p)
     if model_name != "prototype":
@@ -36,15 +40,18 @@ def _physics_with_options(model_name, p, options):
     """Strict option path for ``cad physics run``; unsupported options are rejected.
 
     The ``syringe`` model reuses the prototype's option keys: ``button_actuator`` enables its
-    ``pull`` actuator and ``chassis_clamped`` clamps its housing. ``separator`` is syringe-only.
+    ``pull`` actuator and ``chassis_clamped`` clamps its housing. ``separator`` is for the syringe models only (``syringe``, ``syringe3``).
     """
-    if model_name not in ("prototype", "syringe"):
+    if model_name not in ("prototype", "syringe", "syringe3"):
         return None
     from .physics.options import load_options
 
     opts = load_options(options)
-    if model_name == "syringe":
-        from .physics.syringe_assembly import syringe_assembly
+    if model_name in ("syringe", "syringe3"):
+        if model_name == "syringe3":
+            from .physics.syringe3_assembly import syringe_assembly
+        else:
+            from .physics.syringe_assembly import syringe_assembly
 
         return syringe_assembly(
             p, spring_stiffness_n_m=opts.spring_stiffness_n_m, timestep_s=opts.timestep_s,

@@ -37,6 +37,12 @@ Report what `opened` says. Say "opened in VS Code" only when `opened` is `"vscod
 | 2 | Bad arguments, an unknown model, or not a run directory |
 | 3 | Not opened: no acknowledgement from VS Code with `--editor vscode` (extension missing, untrusted workspace, or another window got it), or the browser launch failed |
 
+## Live monitoring
+
+Open the panel once with `cad gui open <model>`. After that, run builds and sims as usual: with Follow on (the default), the panel follows them. Edits to the model's sources rebuild it, and a `cad physics run` streams into the panel while it steps.
+
+Don't re-run `cad gui open` for each change. Each call reveals the panel again.
+
 ## Sandbox (Claude Code)
 
 - Starting the service binds a loopback port, which the ACC sandbox blocks. The error ends in `PermissionError: [Errno 1] Operation not permitted`. After one such failure, rerun the same command with `dangerouslyDisableSandbox: true`, or ask the user to run it in their terminal. Later opens reuse the running service.

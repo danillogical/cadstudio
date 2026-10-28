@@ -3,6 +3,10 @@
 This is the run-loading half of the Pocky preview, shared by the interactive viewer and the
 GUI trajectory export. It only reads a run directory; nothing here writes or regenerates CAD.
 MuJoCo is imported lazily through :func:`cadkit.physics.require_mujoco`.
+
+Bodies removed by a scenario phase's ``remove_body`` are recomputed from the run's own
+``scenario.json``, as replay does: :meth:`Playback.restore` disables their contacts for rows
+at or after the removal, and :meth:`Playback.framing` leaves them out.
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ from .state_archive import (
     required_members,
     set_native_state,
 )
+from .telemetry import subtree_geoms
 
 
 class PlaybackError(ValueError):
@@ -85,11 +90,51 @@ class Playback:
             self.scenario = json.loads(scenario_raw.decode("utf-8"))
             if not len(self.times):
                 raise PlaybackError("states.npz has no state rows")
+            self.removals = self._removals()
         except PlaybackError:
             raise
         except (ArchiveError, EvidenceError, ReplayError, json.JSONDecodeError,
                 OSError, ValueError) as exc:
             raise PlaybackError(str(exc)) from None
+
+    def _removals(self) -> list[dict]:
+        """``[{body, body_id, phase_index, time_s, geoms}]`` for every removal that happened.
+
+        A removal happens at the start of its phase, so it applies to that phase's rows and
+        every later row; ``time_s`` is the phase start (the previous row's time). A phase
+        that never got a row (a stopped run) removed nothing.
+        """
+        out: list[dict] = []
+        phases = self.scenario.get("phases") if isinstance(self.scenario, dict) else None
+        for phase in phases if isinstance(phases, list) else []:
+            body = phase.get("remove_body") if isinstance(phase, dict) else None
+            if body is None:
+                continue
+            body_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_BODY,
+                                             str(body))
+            if body_id < 0:
+                raise PlaybackError(f"scenario removes unknown body {body!r}")
+            if phase.get("name") not in self.phase_names:
+                continue
+            index = self.phase_names.index(phase.get("name"))
+            rows = np.flatnonzero(self.phase_index == index)
+            if not rows.size or rows[0] == 0:
+                continue
+            out.append({"body": str(body), "body_id": int(body_id), "phase_index": index,
+                        "time_s": float(self.times[rows[0] - 1]),
+                        "geoms": subtree_geoms(self.model, int(body_id))})
+        self._contype = np.array(self.model.geom_contype, copy=True)
+        self._conaffinity = np.array(self.model.geom_conaffinity, copy=True)
+        return out
+
+    def removed_at(self, body: str) -> float | None:
+        """Sim time at which ``body`` was removed, or ``None`` if it never was."""
+        return next((r["time_s"] for r in self.removals if r["body"] == body), None)
+
+    def removed_bodies(self, row: int) -> list[dict]:
+        """The removals in effect at ``row``."""
+        index = int(self.phase_index[int(row)])
+        return [r for r in self.removals if index >= r["phase_index"]]
 
     def _read(self, rel: str, artifacts: dict, verify: bool,
               max_bytes: int = MAX_ARCHIVE_BYTES) -> bytes:
@@ -134,7 +179,17 @@ class Playback:
         return spans
 
     def restore(self, row: int) -> None:
-        """Same restore as replay: native integration state, then a forward pass."""
+        """Same restore as replay: native integration state, then a forward pass.
+
+        Contacts are disabled on bodies removed by ``row``, as they were in the run, so a
+        forward pass never reports contacts for a parked body.
+        """
+        if self.removals:
+            self.model.geom_contype[:] = self._contype
+            self.model.geom_conaffinity[:] = self._conaffinity
+            for removal in self.removed_bodies(row):
+                self.model.geom_contype[removal["geoms"]] = 0
+                self.model.geom_conaffinity[removal["geoms"]] = 0
         set_native_state(self.mujoco, self.model, self.data,
                          self.state["integration_state"][row])
         self.mujoco.mj_forward(self.model, self.data)
@@ -151,7 +206,10 @@ class Playback:
         reach = None
         for row in rows:
             self.restore(int(row))
+            gone = {int(g) for r in self.removed_bodies(int(row)) for g in r["geoms"]}
             for g in geoms:
+                if int(g) in gone:
+                    continue  # a removed body is parked off-scene
                 # World-space corners of the geom's local AABB (centre + half-size).
                 local = m.geom_aabb[g, :3] + corners * m.geom_aabb[g, 3:]
                 world = d.geom_xpos[g] + local @ d.geom_xmat[g].reshape(3, 3).T

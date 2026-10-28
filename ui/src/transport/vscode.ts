@@ -1,9 +1,13 @@
 import { isRecord, jobOf, mapEvent } from "./events";
 import { parseNavigate, type HostToWebview, type NavigateTarget, type TransportMethod, type WebviewToHost } from "./messages";
 import {
+  type ArtifactRange,
   type CadStudioTransport,
+  type FollowLease,
   type HealthInfo,
   type Job,
+  type LiveDoc,
+  type LiveList,
   type ModelList,
   type PhysicsInputs,
   type RunList,
@@ -200,8 +204,33 @@ export class VsCodeTransport implements CadStudioTransport {
     return jobOf(await this.callJson("cancelJob", [id]));
   }
 
-  async getArtifact(path: string): Promise<ArrayBuffer> {
-    const bytes = toArrayBuffer(await this.call("getArtifact", [path]));
+  async follow(model: string): Promise<FollowLease> {
+    return this.callJson<FollowLease>("follow", [{ model }]);
+  }
+
+  async unfollow(model: string): Promise<void> {
+    await this.call("unfollow", [{ model }]);
+  }
+
+  async listLive(): Promise<LiveList> {
+    return this.callJson<LiveList>("listLive", []);
+  }
+
+  async getLive(liveId: string): Promise<LiveDoc> {
+    return this.callJson<LiveDoc>("getLive", [{ liveId }]);
+  }
+
+  /** `range` rides as an optional second `{offset}` argument; the host answers 416 (offset == size) with empty bytes. */
+  async getArtifact(path: string, range?: ArtifactRange): Promise<ArrayBuffer> {
+    const ranged = range !== undefined && range.offset > 0;
+    let result: unknown;
+    try {
+      result = await this.call("getArtifact", ranged ? [path, { offset: range.offset }] : [path]);
+    } catch (error) {
+      if (ranged && error instanceof TransportError && error.status === 416) return new ArrayBuffer(0);
+      throw error;
+    }
+    const bytes = toArrayBuffer(result);
     if (!bytes) throw new TransportError(0, "artifact response is not binary");
     return bytes;
   }

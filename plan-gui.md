@@ -1,6 +1,6 @@
 # plan-gui.md: cadstudio GUI (browser + VS Code webview)
 
-**Status:** H0 browser-first fallback selected. G0–G5 merged and verified; H3 and H4 PASS (user, 2026-10-26). H5 pending (user, laptop). G3c onward runs on the laptop with local workers instead of packetd; pushes still go through webstudio.
+**Status:** H0 browser-first fallback selected. G0–G5 merged and verified; H3, H4 and H5 PASS (user, 2026-10-26/27). G7 (live monitoring) done and H7 PASS (user, 2026-10-27); G6 still open. G3c onward runs on the laptop with local workers instead of packetd; pushes still go through webstudio.
 **Date:** 2026-10-25.
 **Started from:** `~/Downloads/plan-draft-gui.md`, adapted to the repo as it stands at `81649e6`.
 **Runs on:** webstudio.local, through packetd (Codex skill `packetd`, MCP server `http://127.0.0.1:7766/mcp`).
@@ -55,6 +55,8 @@ What changed from the draft, after reading the repo:
 **H4 (2026-10-26): PASS**, reported by the user. This also confirms the H0 workspace install that was deferred: the extension installed from Workspace Recommendations and opened in the same window.
 
 **G5 execution (2026-10-26):** done on the laptop by local workers; one implemented it and another wrote the gating tests (119 Python, plus extension and UI tests). Open requests are in-memory, single use and expire after 60 s. The CLI waits up to 10 s for an ack and reports a nack's reason at once. When it stops waiting, it nacks its own request so a late claim can't open a second view. Ack only follows the navigate message being posted to the panel. A window whose folder or service differs can't see the request, so that case ends in the timeout. Merge gate: 1,670 Python/physics tests, 233 UI tests, 528 extension tests, builds, deterministic committed extension output, `uv.lock` unchanged, mirror scan clean. The first two full runs each failed one end-to-end test. The CLI redacted tokens to `…`, and by that point in the suite the test process decoded the CLI's stderr as US-ASCII, so it crashed. Redaction now writes `REDACTED`. What switches the process encoding wasn't identified. Not verified, left for H5: a real `code --open-url`, the extension acking, panel navigation, and the wrong-window and uninstalled-extension fallbacks.
+
+**H5 (2026-10-27): PASS**, reported by the user ("it worked"). The user skipped the uninstalled-extension fallback check, so the browser fallback is covered only by the automated tests (`tests/test_cadkit_gui_open.py`), not by a live run. One Claude Code session in VS Code's terminal first failed to reuse the running service: both `cad gui open` attempts tried to start a second service and failed binding the port, even with the sandbox bypassed. The reuse check passed when run directly in that session, and the same command worked from another session. The cause wasn't found. It is probably the intermittent loopback denial described in the user's global notes, but that is unconfirmed.
 
 ## 1. Goals and boundaries
 
@@ -168,6 +170,11 @@ Dependency direction (enforced by a test in G1):
 - `contacts.bin` (optional) holds per-frame contact points and normal forces.
 - Body meshes come from the run's `assets/*.stl`. The geom-to-body mapping comes from compiling the run's `scene.xml`.
 
+**Live sidecar** (`<out-parent>/<run-name>.live/`, written by `cad physics run` unless `--no-live`; a sibling of the run dir, which is never written into; never cleaned up):
+- `live.json` is replaced atomically. It holds `schemaVersion: 1`, `units: "mm"`, `liveId`, `fps` (default 30), `t0`, `frames`, `simTime`, `plannedTime`, `bodies[]`, `phases[]`, `poses`, `done`, `status`, `runId` and `error`.
+- `poses.bin` is append-only, with the trajectory's layout. Readers trust only `frames`.
+- `meshes/*.glb` are written once the scene has compiled. `bodies[]` stays empty until every mesh file it lists exists.
+
 **Service discovery:** `out/.gui/service.json` with pid, port, token, protocol version, repo root, start time and mode `0600`.
 
 ### 3.2 Service surface (`schemaVersion` on every response)
@@ -182,8 +189,10 @@ Dependency direction (enforced by a test in G1):
 | `GET /v1/runs/{runId}/trajectory` | trajectory manifest (exports on first request) |
 | `POST /v1/runs` | job: `cad physics run` with a scenario, acceptance and options chosen from files already in the project |
 | `GET /v1/jobs/{id}`, `POST /v1/jobs/{id}/cancel` | job state, log tail, artifacts |
-| `GET /v1/artifacts/{path}` | stream a file **only** from `out/<project>/…/scene/` or a `.gui/` trajectory dir, after canonicalising the path |
-| `GET /v1/events` | SSE stream of job and artifact changes |
+| `GET /v1/artifacts/{path}` | stream a file **only** from `out/<project>/…/scene/`, a `.gui/` trajectory dir or a `.live/` sidecar, after canonicalising the path; honours `Range` |
+| `GET /v1/events` | SSE stream of job and artifact changes (`artifact` kinds `scene`, `run`, `live`) |
+| `GET /v1/live`, `GET /v1/live/{liveId}` | live sidecars under `out/`, newest first; one sidecar's `live.json` |
+| `POST /v1/follow`, `DELETE /v1/follow`, `GET /v1/follow` | follow `{model}` with a 60 s lease (the UI renews it every 20 s); edits to the project's sources then rebuild it; stop one model or all; list follows |
 | `POST /v1/open` | `cad gui open`: create a one-time open request for `{model}`, `{run}` or `{}` (validated like the scene and trajectory routes); `{id, expiresAt, target}`, single use, expires after 60 s, held in memory |
 | `GET /v1/open/{id}` | the extension claims the request: `{id, target, repoRoot}`; a second claim is 404, an expired one 410 |
 | `POST /v1/open/{id}/ack`, `POST /v1/open/{id}/nack` | the extension opened the target, or refused with `{reason}` (wrong repo, untrusted, panel not ready); the CLI also nacks its own request when it stops waiting |
@@ -443,6 +452,32 @@ The orchestrator records the answers in `editor/vscode/README.md` (trivial doc c
 3. Run `cad gui open pocky/syringe`.
 
 - **PASS:** this works without anything installed globally beyond uv, node, VS Code and the agents.
+
+### Milestone 7: live monitoring
+
+**H7 (2026-10-27): PASS**, reported by the user. With the panel following `pocky/syringe` and focus in another window, a `separator.gap` edit (5.75 → 7.0) rebuilt and re-rendered in 37 s, and the revert rebuilt again. A two-cycle wedge-clamped run started from the terminal (`out/h7/two-cycle`, PASS) appeared on its own with the LIVE badge, played while it ran, then swapped to the final run and looped. The panel never took focus. The extension's real-HTTP tests failed twice from Claude's sandbox with `listen EPERM` on 127.0.0.1 and passed in the user's terminal (571 tests).
+
+
+**Packet G7: live monitoring**
+
+> Make the GUI follow work done outside it:
+> - Service builds run as a fresh subprocess, `cad build <model> --check --scene --json`, so edited model code is always picked up. `cad build --scene` writes `out/<project>/<model>/scene/` and is skipped if a check FAILs.
+> - Service watcher (`cadkit/gui/watch.py`, 1 s poll): `POST/GET/DELETE /v1/follow` leases a follow for 60 s, renewed by the UI every 20 s. Edits to `projects/<project>/**/*.py|*.toml` rebuild each followed model of that project after a 1.5 s debounce. The watcher emits `artifact` SSE events for any scene write, any new or completed run dir, and `.live` sidecars (throttled).
+> - `cad physics run` streams a live sidecar `<run-name>.live/` (`live.json`, append-only `poses.bin`, meshes) next to the run dir. It is on by default; `--no-live` turns it off, and `--live-fps N` sets the sample rate (default 30). Routes: `GET /v1/live`, `GET /v1/live/{liveId}`, and `Range` on artifacts.
+> - UI (`ui/src/app/follow.ts`, `ui/src/playback/live.ts`): a Follow toggle, on by default. A live run opens by itself, autoplays at 1x trailing the newest frame, and shows a LIVE / STALLED / ENDED badge. When it is done, playback swaps to the finished trajectory and loops. The clock is wall-clock based, with an interval fallback when rAF is throttled. Playback does not pause on window blur or visibility change.
+> - Extension (`editor/vscode`): the panel never takes focus (`preserveFocus`), and the `follow` and `unfollow` methods are forwarded.
+>
+> Acceptance:
+> - `.venv/bin/python -m pytest tests/test_cadkit_gui_build_fresh.py tests/test_cadkit_gui_watch.py tests/test_cadkit_physics_live.py -q`
+> - `cd ui && npm test && npm run build`
+> - `cd editor/vscode && npm test && npm run build && git diff --exit-code ../../.vscode/extensions/cadstudio`
+
+**Gate H7 (user, laptop):**
+1. Keep the CADStudio panel open beside another window that has focus.
+2. An agent edits a parameter, then runs a two-cycle sim from the terminal.
+3. Leave the laptop untouched while it runs.
+
+- **PASS:** the re-render, the live playback and the looping final run all appear in the panel without touching the laptop.
 
 ## 5. Final acceptance (all required)
 

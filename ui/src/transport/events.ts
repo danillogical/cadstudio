@@ -27,5 +27,14 @@ export function mapEvent(parsed: unknown): ServiceEvent | null {
   if (parsed.kind === "run" && typeof parsed.runId === "string") {
     return { type: "artifact", kind: "run", runId: parsed.runId };
   }
+  if (parsed.kind === "live" && typeof parsed.liveId === "string") {
+    return {
+      type: "artifact",
+      kind: "live",
+      liveId: parsed.liveId,
+      frames: typeof parsed.frames === "number" ? parsed.frames : 0,
+      done: parsed.done === true,
+    };
+  }
   return null;
 }

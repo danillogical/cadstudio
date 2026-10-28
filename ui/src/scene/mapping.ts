@@ -15,6 +15,11 @@ export interface LoadedScene {
   root: Group;
   parts: Map<string, Object3D>;
   bounds: Box3;
+  /**
+   * Bounds of what is shown right now, for a scene whose objects move or hide (a trajectory).
+   * Every camera fit uses it when present; otherwise the fixed `bounds`.
+   */
+  fitBounds?: () => Box3;
 }
 
 export const PART_ID_KEY = "partId";
