@@ -2,25 +2,25 @@ import dataclasses
 
 import pytest
 
-from projects.armor.params import Params
+from projects.starter.params import Params
 
 
 def test_override_returns_new_and_leaves_original(p):
-    q = p.override({"fit.slide_clearance": 0.4, "lid.t": 6.5})
+    q = p.override({"fit.clearance": 0.2, "box.h": 30.0})
     assert isinstance(q, Params) and q is not p
-    assert q.fit.slide_clearance == 0.4
-    assert q.lid.t == 6.5
-    assert p.fit.slide_clearance == 0.7 and p.lid.t == 7.0
+    assert q.fit.clearance == 0.2
+    assert q.box.h == 30.0
+    assert p.fit.clearance == 0.4 and p.box.h == 25.0
 
 
 def test_frozen(p):
     with pytest.raises(dataclasses.FrozenInstanceError):
-        p.lid = None
+        p.box = None
     with pytest.raises(dataclasses.FrozenInstanceError):
-        p.lid.w = 1.0
+        p.box.w = 1.0
 
 
-@pytest.mark.parametrize("key", ["fit.nope", "nosuch.w", "lid", "lid.", "w"])
+@pytest.mark.parametrize("key", ["fit.nope", "nosuch.w", "box", "box.", "w"])
 def test_override_unknown_key(p, key):
     with pytest.raises(KeyError):
         p.override({key: 1.0})

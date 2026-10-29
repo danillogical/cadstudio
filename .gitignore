@@ -1,6 +1,7 @@
 .venv/
 node_modules/
 out/
+.cadstudio/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -11,3 +12,7 @@ MUJOCO_LOG.TXT
 .env.*
 !.env.example
 ui/dist/
+
+# VS Code extension packaging output
+editor/vscode/vsix-stage/
+editor/vscode/*.vsix

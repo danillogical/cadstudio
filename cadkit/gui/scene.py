@@ -1,6 +1,6 @@
 """Scene export: ``scene.json`` plus one binary glTF per part, in assembly coordinates.
 
-**Scene** (`out/<project>/<model>/scene/`, written by `cad gui scene <model>`):
+**Scene** (`projects/<project>/out/<model>/scene/`, written by `cad gui scene <model>`):
 - `scene.json` contains:
   - `schemaVersion: 1`, `project`, `model`, `units: "mm"`;
   - provenance: git commit, a dirty flag, a params-file sha256, `--set` overrides, and the build time;
@@ -11,7 +11,7 @@
 Fields: ``schemaVersion``, ``project``, ``model``, ``units``, ``provenance``
 (``commit``, ``dirty``, ``paramsPath``, ``paramsSha256``, ``overrides``, ``builtAt``) and
 ``parts`` (``id``, ``name``, ``mesh``, ``bbox``, ``volume``, ``color``, optional
-``printPose``). The default output dir is ``out/<project>/<model>/scene/``.
+``printPose``). The default output dir is ``projects/<project>/out/<model>/scene/`` in the workspace.
 """
 from __future__ import annotations
 
@@ -26,8 +26,9 @@ from pathlib import Path
 import trimesh
 
 from ..mesh import shape_to_mesh
-from ..params import REPO_ROOT, override
+from ..params import override
 from ..project import load_model, resolve
+from ..workspace import model_out, workspace_root
 
 SCHEMA_VERSION = 1
 # Match build123d Mesher.add_shape defaults used by cadkit/export.py.
@@ -42,7 +43,8 @@ class SceneError(ValueError):
 
 
 def git_provenance(root: Path) -> dict:
-    """The repo's HEAD commit and dirty flag; ``None`` values when git is unavailable."""
+    """The HEAD commit and dirty flag of the git repo at ``root``; ``None`` values when git is
+    unavailable or ``root`` is not in a git repo."""
     def git(*args: str):
         try:
             return subprocess.run(["git", *args], cwd=root, capture_output=True,
@@ -83,11 +85,11 @@ def _colour(name: str, index: int) -> str:
     return _part_color(name, index)
 
 
-def _display_path(path: Path) -> str:
-    """Repo-relative POSIX path, or the absolute path when the file is outside the repo."""
+def _display_path(path: Path, root: Path) -> str:
+    """Workspace-relative POSIX path, or the absolute path when the file is outside it."""
     resolved = path.resolve()
     try:
-        return resolved.relative_to(REPO_ROOT).as_posix()
+        return resolved.relative_to(root).as_posix()
     except ValueError:
         return str(resolved)
 
@@ -116,7 +118,8 @@ def write_scene(spec, *, params_path=None, sets=None, out=None) -> dict:
     except ValueError as exc:
         raise SceneError(str(exc)) from None
 
-    outdir = Path(out) if out else REPO_ROOT / "out" / project.name / model / "scene"
+    root = workspace_root()
+    outdir = Path(out) if out else model_out(project.name, model, root) / "scene"
 
     entries: list[dict] = []
     payloads: list[tuple[str, bytes]] = []
@@ -153,8 +156,8 @@ def write_scene(spec, *, params_path=None, sets=None, out=None) -> dict:
         "model": model,
         "units": "mm",
         "provenance": {
-            **git_provenance(REPO_ROOT),
-            "paramsPath": _display_path(path),
+            **git_provenance(root),
+            "paramsPath": _display_path(path, root),
             "paramsSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "overrides": {key: sets[key] for key in sorted(sets or {})},
             "builtAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

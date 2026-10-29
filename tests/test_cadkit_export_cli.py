@@ -35,16 +35,16 @@ def cad(*args):
 def test_cli_list():
     r = cad("list")
     assert r.returncode == 0, r.stderr
-    assert "armor/demo_cube" in r.stdout.split()
+    assert {"starter/box", "starter/hinge"} <= set(r.stdout.split())
 
 
 def test_cli_build_check(tmp_path):
-    r = cad("build", "demo_cube", "--check", "--out", str(tmp_path))
+    r = cad("build", "box", "--check", "--out", str(tmp_path))
     assert r.returncode == 0, r.stdout + r.stderr
     rep = json.loads((tmp_path / "report.json").read_text())
-    assert "cube" in rep
-    assert all(c["status"] != "fail" for c in rep["cube"])
-    for f in ("cube.step", "cube.stl", "cube.3mf", "assembly.step"):
+    assert "tray" in rep
+    assert all(c["status"] != "fail" for c in rep["tray"])
+    for f in ("tray.step", "tray.stl", "tray.3mf", "assembly.step"):
         assert (tmp_path / f).exists(), f
 
 
@@ -54,30 +54,30 @@ def test_cli_unknown_model(tmp_path):
 
 
 def test_cli_unknown_set_key(tmp_path):
-    r = cad("build", "demo_cube", "--set", "fit.bogus=1", "--out", str(tmp_path))
+    r = cad("build", "box", "--set", "fit.bogus=1", "--out", str(tmp_path))
     assert r.returncode != 0
 
 
 def test_cli_set_reflected_in_report(tmp_path):
-    r = cad("build", "demo_cube", "--check", "--set", "fit.slide_clearance=0.5",
+    r = cad("build", "hinge", "--check", "--set", "fit.clearance=0.5",
             "--out", str(tmp_path))
     assert r.returncode == 0, r.stdout + r.stderr
     rep = json.loads((tmp_path / "report.json").read_text())
-    gap = {c["name"]: c for c in rep["cube"]}["lid_min_gap"]
+    gap = {c["name"]: c for c in rep["leaf_a"]}["clearance"]
     assert "need >= 0.250" in gap["detail"]  # 0.5 * 0.5
 
 
 def test_cli_check_command_failing_exit(tmp_path):
-    # Large slide_clearance makes the demo cube's 30 mm gap insufficient -> exit 1.
-    r = cad("check", "demo_cube", "--set", "fit.slide_clearance=100", "--out", str(tmp_path))
+    # A huge min_wall makes the tray's walls too thin -> exit 1.
+    r = cad("check", "box", "--set", "structure.min_wall=100", "--out", str(tmp_path))
     assert r.returncode == 1
 
 
 def test_render_model_smoke(tmp_path, p):
     from cadkit.render import render_model
-    from projects.armor import PROJECT
-    from projects.armor.models import demo_cube
-    parts = demo_cube.build(p)
+    from projects.starter import PROJECT
+    from projects.starter.models import box as box_model
+    parts = box_model.build(p)
     written = render_model(parts, p, tmp_path, PROJECT)
     iso = tmp_path / "renders" / "iso.png"
     assert written["iso.png"] == iso

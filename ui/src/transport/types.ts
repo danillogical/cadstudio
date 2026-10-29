@@ -75,6 +75,10 @@ export interface RunEntry {
   status: string | null;
   /** summary.json mtime in epoch seconds; the server lists runs newest first. */
   modified: number | null;
+  /** Owning project; null for runs outside any project (fixtures). */
+  project: string | null;
+  /** Full `<project>/<model>` spec; null when the run's model is unknown. */
+  model: string | null;
 }
 
 export interface RunList {
@@ -208,6 +212,9 @@ export interface LiveSummary {
   status: string | null;
   /** `live.json` mtime in epoch seconds. */
   mtime: number | null;
+  /** Owning project and full `<project>/<model>` spec, when the service reports them. */
+  project?: string | null;
+  model?: string | null;
 }
 
 export interface LiveList {

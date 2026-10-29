@@ -11,7 +11,7 @@ The extension hosts the same `ui/` bundle the browser uses, in a webview panel:
 - **Assets.** The build copies `ui/dist` into `media/`. The panel loads it through webview URIs
   under a strict CSP: `default-src 'none'`, scripts and the stylesheet only with a per-load nonce,
   `connect-src 'none'`.
-- **Service.** The extension host reads `out/.gui/service.json`. It uses the service only if
+- **Service.** The extension host reads `.cadstudio/gui/service.json`. It uses the service only if
   `/v1/health` answers for the same pid and this workspace folder as repo root. Otherwise it runs
   `uv run --frozen --extra physics cad gui serve --no-browser --json` in a "GUI service" task and
   waits up to 180 s for it to register. Closing the panel or the window leaves the service running.
@@ -21,12 +21,30 @@ The extension hosts the same `ui/` bundle the browser uses, in a webview panel:
   token stays in the extension host.
 - **Trust.** The extension does not run in untrusted workspaces.
 
+## Install
+
+Run `./setup.sh` from the engine root. It builds the UI, packages the extension to
+`editor/vscode/cadstudio.vsix` and runs `code --install-extension ... --force`, so the extension
+is available in every VS Code window, including your own projects repos. To do it by hand:
+
+```sh
+cd ui && npm ci && npm run build
+cd ../editor/vscode && npm ci && npm run build && npm run package
+code --install-extension cadstudio.vsix --force
+```
+
+If `code` is not found, run **Shell Command: Install 'code' command in PATH** from the Command
+Palette. Then run **CADStudio: Open GUI**. The first open starts the "GUI service" task if no
+service is running for the folder.
+
 ## Prerequisites
 
 - Node.js >= 22
-- VS Code >= 1.89 (local workspace extensions)
+- VS Code >= 1.89
 
 ## Develop
+
+Developing the extension inside the engine repo uses the committed workspace build instead:
 
 ```sh
 cd editor/vscode
@@ -41,14 +59,9 @@ into `media/` and fails if it is missing, and the stale-build guard compares `me
 Commit `.vscode/extensions/cadstudio/` after every source change; the build test fails when
 the committed build differs from a fresh one.
 
-## Optional manual install
-
-1. Open the repository in VS Code and trust the workspace.
-2. Open the Extensions view and find "cadstudio" under **Workspace Recommendations**.
-3. Choose **Install Workspace Extension** (VS Code installs it from
-   `.vscode/extensions/cadstudio/`; there is no marketplace or global install).
-4. Run **CADStudio: Open GUI** from the Command Palette. The panel shows the CADStudio GUI; the
-   first open starts the "GUI service" task if no service is running for this folder.
+To use that workspace build: open the repository in VS Code and trust the workspace, find
+"cadstudio" under **Workspace Recommendations** in the Extensions view, and choose
+**Install Workspace Extension**.
 
 ## URI route
 

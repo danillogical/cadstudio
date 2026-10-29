@@ -1,8 +1,14 @@
 """Authenticated local GUI service: ``cad gui serve`` on 127.0.0.1.
 
-Artifact contracts (plan-gui.md section 3.1)
+Artifact contracts
 
-**Scene** (``out/<project>/<model>/scene/``, written by ``cad gui scene <model>``):
+Layout (see ``cadkit/workspace.py``): a model's outputs live in ``projects/<project>/out/<model>/``,
+engine fixture runs in ``.cadstudio/fixtures/`` and the service's own state in ``.cadstudio/gui/``,
+all under the workspace (the service's ``repoRoot``). Every id below is a POSIX path relative to
+the workspace, and only paths under an *output root* (``projects/<project>/out/**`` or
+``.cadstudio/fixtures/**``) are ever resolved or served.
+
+**Scene** (``projects/<project>/out/<model>/scene/``, written by ``cad gui scene <model>``):
 - ``scene.json`` contains:
   - ``schemaVersion: 1``, ``project``, ``model``, ``units: "mm"``;
   - provenance: git commit, a dirty flag, a params-file sha256, ``--set`` overrides, and the build time;
@@ -20,9 +26,9 @@ Artifact contracts (plan-gui.md section 3.1)
 - ``contacts.bin`` (optional) holds per-frame contact points and normal forces.
 - Body meshes come from the run's ``assets/*.stl``. The geom-to-body mapping comes from compiling the run's ``scene.xml``.
 
-**Service discovery:** ``out/.gui/service.json`` with pid, port, token, protocol version, repo root, start time and mode ``0600``.
+**Service discovery:** ``<workspace>/.cadstudio/gui/service.json`` with pid, port, token, protocol version, repo root (the workspace's real path, see ``cadkit.workspace``), start time and mode ``0600``. ``cad gui open`` logs a service it starts to ``service.log`` beside it. Nothing in ``.cadstudio/gui/`` is ever served.
 
-Service surface (plan-gui.md section 3.2; ``schemaVersion`` on every response)
+Service surface (``schemaVersion`` on every response)
 
 | Endpoint | Purpose |
 |---|---|
@@ -30,12 +36,12 @@ Service surface (plan-gui.md section 3.2; ``schemaVersion`` on every response)
 | ``GET /v1/models`` | ``cad list`` as JSON |
 | ``GET /v1/models/{project}/{model}/scene`` | latest scene manifest, or 404 with the command that would build it |
 | ``POST /v1/models/{project}/{model}/build`` | job: ``cad build --check --scene`` in a subprocess |
-| ``GET /v1/runs`` | physics run dirs found under ``out/`` (has ``summary.json`` and ``states.npz``), newest first |
+| ``GET /v1/runs`` | physics run dirs found under the output roots (has ``summary.json`` and ``states.npz``), newest first |
 | ``GET /v1/runs/{runId}/trajectory`` | trajectory manifest (exports on first request) |
 | ``POST /v1/runs`` | job: ``cad physics run`` with a scenario, acceptance and options chosen from files already in the project |
 | ``GET /v1/jobs/{id}``, ``POST /v1/jobs/{id}/cancel`` | job state, log tail, artifacts |
-| ``GET /v1/artifacts/{path}`` | stream a file **only** from ``out/<project>/…/scene/``, a ``.gui/`` trajectory dir or a ``.live/`` sidecar, after canonicalising the path; honours ``Range`` |
-| ``GET /v1/live`` | live sidecars (``<liveId>.live/`` with a ``live.json``) under ``out/``, newest first |
+| ``GET /v1/artifacts/{path}`` | stream a file **only** from ``projects/<project>/out/<model>/scene/``, or a ``.gui/`` trajectory dir or ``.live/`` sidecar under an output root, after canonicalising the path; honours ``Range`` |
+| ``GET /v1/live`` | live sidecars (``<liveId>.live/`` with a ``live.json``) under the output roots, newest first |
 | ``GET /v1/live/{liveId}`` | one sidecar's ``live.json`` |
 | ``GET /v1/events`` | SSE stream of job and artifact changes |
 | ``POST /v1/follow`` | follow ``{model}``: rebuild it when its project's sources change (leased) |
@@ -44,7 +50,7 @@ Service surface (plan-gui.md section 3.2; ``schemaVersion`` on every response)
 | ``GET /v1/open/{id}`` | claim an open request (single use): its target and the repo root |
 | ``POST /v1/open/{id}/ack``, ``POST /v1/open/{id}/nack`` | the editor opened the target, or refused with ``{reason}`` |
 | ``GET /v1/open/{id}/status`` | ``pending``, ``claimed``, ``acked``, ``nacked`` (with reason) or ``expired`` |
-| ``GET /`` | the built ``ui/dist`` |
+| ``GET /`` | the engine's built ``ui/dist`` |
 
 Rules:
 - Every non-health route requires ``Authorization: Bearer <token>``, or the ``?token=`` query the server gives the browser on open.
@@ -60,8 +66,20 @@ Deviations and response details
   Origin checks, and every ``/v1/*`` route except health still requires the token.
 - JSON bodies carry ``schemaVersion: 1`` plus the keys documented per route below. Errors are
   ``{"schemaVersion": 1, "error": "<message>"}`` (plus extra keys where noted).
-- ``runId`` is a POSIX path relative to ``out/``. Trajectory artifacts live beside the run in
-  ``<run>.gui/``, so their artifact path is ``<runId>.gui/<file>``.
+- ``runId`` is the run dir's POSIX path relative to the workspace, e.g.
+  ``projects/<p>/out/<m>/runs/<scenario_id>-<stamp>`` or ``.cadstudio/fixtures/...``. Trajectory
+  artifacts live beside the run in ``<run>.gui/``, so their artifact path is
+  ``<runId>.gui/<file>``.
+- ``GET /v1/runs`` entries are ``{runId, path, status, modified, project, model}``. ``project`` and
+  ``model`` (``"<p>/<m>"``) come from the path: ``model`` is the first dir below
+  ``projects/<p>/out/`` when the run lies below it, and is null for a ``_``-prefixed dir there
+  (such as ``_evidence``, which is not a model) or a run placed directly in ``out/``. Fixture runs
+  have both null.
+- Containment: the output root is spelled from the workspace's real path and never resolved, and
+  a request's real path must stay inside the root it names. So a symlinked ``projects/<p>``,
+  ``out`` or ``.cadstudio`` that points elsewhere serves nothing (403), as does any symlink that
+  leads out of the root; a run or live dir that is itself a symlink is always 403. An artifact
+  path outside every output root is 403; a run or live id there is 404 (unknown), exists or not.
 - A build job with a failing check leaves the previous scene in place and marks it ``stale``.
   Builds run as ``python -m cadkit.cli build <model> --check --scene --json`` subprocesses, so they
   always import the current sources and can be cancelled (killing the process group) once the
@@ -69,17 +87,19 @@ Deviations and response details
 - ``GET /v1/models/{project}/{model}/physics-inputs`` (token required) lists the files a run may
   use: ``scenarios`` (``physics/scenarios/*.json``), ``acceptance`` (``physics/*_acceptance.json``)
   and ``options`` (``physics/options/*.toml``), each entry ``{"name", "path"}`` with ``path``
-  relative to the repo root. Only regular, non-symlink files inside the project are listed.
+  relative to the workspace root. Only regular, non-symlink files inside the project are listed.
 - ``POST /v1/runs`` accepts a scenario, acceptance or options path only when it is in that
   listing, spelled repo-relative (as listed) or project-relative. Traversal, absolute and
   outside-project paths are 403, a missing file is 400, and an existing unlisted file is 403.
 
 Live runs (contract in ``cadkit/physics/live.py``; all token-protected)
 
-- ``cad physics run`` (so also ``POST /v1/runs`` jobs) streams poses to ``<run>.live/`` beside
-  the run dir. ``liveId`` is that dir's path relative to ``out/`` without ``.live``, which is
+- ``cad physics run`` (so also ``POST /v1/runs`` jobs, which write to
+  ``projects/<p>/out/<m>/runs/<scenario_id>-<stamp>``) streams poses to ``<run>.live/`` beside
+  the run dir. ``liveId`` is that dir's workspace-relative path without ``.live``, which is
   also the ``runId`` the finished run gets; its files are ``<liveId>.live/<file>``.
-- ``GET /v1/live``: 200 ``{lives: [{liveId, frames, done, status, mtime}]}``, newest
+- ``GET /v1/live``: 200 ``{lives: [{liveId, frames, done, status, mtime, project, model}]}``
+  (``project``/``model`` as for ``GET /v1/runs``), newest
   ``live.json`` mtime first. Dirs without a readable ``live.json`` object are left out;
   symlinked dirs are never entered.
 - ``GET /v1/live/{liveId}``: 200 with the ``live.json`` object itself (its keys at the top
@@ -95,9 +115,10 @@ Live runs (contract in ``cadkit/physics/live.py``; all token-protected)
 Events (``GET /v1/events``; SSE ``id``, ``event`` and a JSON ``data`` line)
 
 - ``job`` ``{job}``: a job was queued, started, cancelled or finished (the ``GET /v1/jobs/{id}`` doc).
-- ``artifact`` ``{kind: "scene", model}``: ``out/<model>/scene/scene.json`` changed, from a
-  service build job or any other writer (``cad gui scene``, ``cad build --scene``).
-- ``artifact`` ``{kind: "run", runId}``: a run dir appeared under ``out/`` or its
+- ``artifact`` ``{kind: "scene", model}``: ``projects/<p>/out/<m>/scene/scene.json`` changed
+  (``model`` is ``"<p>/<m>"``), from a service build job or any other writer (``cad gui scene``,
+  ``cad build --scene``).
+- ``artifact`` ``{kind: "run", runId}``: a run dir appeared under an output root or its
   ``summary.json`` changed, from a service physics job or an external ``cad physics run``.
 - ``artifact`` ``{kind: "live", liveId, frames, done}``: a ``<liveId>.live/`` sidecar's
   ``live.json`` or ``poses.bin`` changed (at most about two per second per live dir).
@@ -121,8 +142,9 @@ Follow (all token-protected, held in memory only; rules in ``cadkit/gui/watch.py
 Open requests (``cad gui open``; all token-protected, held in memory only)
 
 - ``POST /v1/open`` takes at most one of ``{"model": "<project>/<model>"}`` (must resolve, else
-  404) or ``{"run": "<runId>"}`` (validated like the trajectory route: 403 for unsafe paths, 404
-  unless it is a run dir under ``out/``); ``{}`` opens the GUI with no target. 201
+  404) or ``{"run": "<runId>"}`` (validated like the trajectory route: 403 for unsafe paths or
+  ones outside the output roots, 404 unless it is a run dir); ``{}`` opens the GUI with no
+  target. 201
   ``{id, expiresAt, target}``, where ``target`` is ``{"model"}``, ``{"run"}`` or ``null`` and
   ``expiresAt`` is epoch seconds. Ids are random, single use, and expire ``OPEN_TTL_S`` (60 s)
   after creation.
@@ -141,6 +163,7 @@ import collections
 import contextlib
 import hashlib
 import hmac
+import html
 import http.server
 import json
 import math
@@ -163,10 +186,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..params import REPO_ROOT
 from ..project import Project, all_models, discover, list_models, resolve
+from ..workspace import (ENGINE_ROOT, OutputPathError, default_run_dir, gui_state_dir,
+                         model_out, output_owner, output_root_parts, resolve_output, safe_parts,
+                         workspace_root)
 from . import watch as _watch
-from .watch import Watcher, is_run_dir, walk_out
+from .watch import Watcher, is_run_dir, walk_outputs
 
 PROTOCOL_VERSION = 1
 SCHEMA_VERSION = 1
@@ -214,13 +239,20 @@ _CONTENT_TYPES = {
     ".woff2": "font/woff2",
 }
 
+# The built UI ships with the engine, not with the workspace.
+ENGINE_UI_DIST = ENGINE_ROOT / "ui" / "dist"
+
 _FALLBACK_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>CADStudio GUI</title></head>
 <body><h1>CADStudio GUI</h1>
 <p>The GUI is not built. Run:</p>
-<pre>cd ui &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+<pre>cd {ui_dir} &amp;&amp; npm ci &amp;&amp; npm run build</pre>
 </body></html>
 """
+
+
+def _fallback_page(dist: Path) -> str:
+    return _FALLBACK_PAGE.format(ui_dir=html.escape(str(dist.parent)))
 
 
 class _HttpError(Exception):
@@ -452,15 +484,17 @@ class OpenRequestStore:
 class GuiService:
     """The loopback HTTP service, its job table and its discovery record."""
 
-    def __init__(self, *, repo_root=REPO_ROOT, out_root=None, port: int = 0,
+    def __init__(self, *, repo_root=None, ui_dist=None, port: int = 0,
                  quiet: bool = False, watch: bool = True,
                  watch_interval: float = _watch.DEFAULT_INTERVAL_S,
                  watch_debounce: float = _watch.DEFAULT_DEBOUNCE_S,
                  follow_lease: float = _watch.DEFAULT_LEASE_S,
                  live_interval: float = _watch.DEFAULT_LIVE_INTERVAL_S) -> None:
-        self.repo_root = Path(repo_root).resolve()
-        self.out_root = Path(out_root) if out_root is not None else self.repo_root / "out"
-        self.out_root = self.out_root.resolve()
+        # repo_root is the workspace: projects and their out/ dirs, .cadstudio, build cwd and
+        # physics-input paths. Every id the service hands out is relative to it.
+        self.repo_root = Path(repo_root if repo_root is not None else workspace_root()).resolve()
+        # The built UI ships with the engine, whatever workspace is served.
+        self.ui_dist = Path(ui_dist) if ui_dist is not None else ENGINE_UI_DIST
         self.token = secrets.token_urlsafe(32)
         self.quiet = quiet
         self.stop_event = threading.Event()
@@ -516,7 +550,7 @@ class GuiService:
 
     @property
     def discovery_path(self) -> Path:
-        return discovery_path(self.out_root)
+        return discovery_path(self.repo_root)
 
     def write_discovery(self) -> dict:
         doc = {
@@ -550,7 +584,7 @@ class GuiService:
         return doc
 
     def _remove_discovery(self) -> None:
-        current = read_discovery(self.out_root)
+        current = read_discovery(self.repo_root)
         if not current:
             return
         if current.get("pid") != os.getpid() or current.get("token") != self.token:
@@ -573,7 +607,7 @@ class GuiService:
         self.publish("job", {"job": job.to_dict()})
         # The watcher skips what this job writes until the job records and announces it itself.
         run_out = job.payload.get("out") if job.kind == "run" else None
-        watch_key = job.key if run_out is None else _relative_to(Path(run_out), self.out_root)
+        watch_key = job.key if run_out is None else _relative_to(Path(run_out), self.repo_root)
         self.watcher.begin_job(job.kind, watch_key)
         try:
             if job.kind == "build":
@@ -581,7 +615,8 @@ class GuiService:
                 if _build_model(self, job, project, job.payload["model"],
                                 job.payload["sets"]) is False:
                     return
-                job.artifacts = {"scene": f"{job.key}/scene/scene.json"}
+                job.artifacts = {"scene": f"{_scene_base(project.name, job.payload['model'])}"
+                                          f"/scene.json"}
                 self.scene_state[(project.name, job.payload["model"])] = {
                     "stale": False, "error": None, "job": job.id}
                 self.watcher.note_scene(job.key)
@@ -653,14 +688,15 @@ def _utc_now() -> str:
 # -- discovery helpers -----------------------------------------------------------------
 
 
-def discovery_path(out_root) -> Path:
-    return Path(out_root) / ".gui" / "service.json"
+def discovery_path(repo_root) -> Path:
+    """The workspace's discovery record, ``<workspace>/.cadstudio/gui/service.json``."""
+    return gui_state_dir(Path(repo_root)) / "service.json"
 
 
-def read_discovery(out_root) -> dict | None:
+def read_discovery(repo_root) -> dict | None:
     """The discovery record, or ``None`` when it is missing or not a JSON object."""
     try:
-        doc = json.loads(discovery_path(out_root).read_text(encoding="utf-8"))
+        doc = json.loads(discovery_path(repo_root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return doc if isinstance(doc, dict) else None
@@ -684,14 +720,15 @@ def _pid_alive(pid) -> bool:
     return True
 
 
-def existing_service(out_root, repo_root=REPO_ROOT) -> dict | None:
-    """A registered service that is alive, for this repo, and answers its own health check."""
-    doc = read_discovery(out_root)
+def existing_service(repo_root=None) -> dict | None:
+    """A registered service that is alive, for this workspace, and answers its own health check."""
+    root_path = Path(repo_root if repo_root is not None else workspace_root()).resolve()
+    doc = read_discovery(root_path)
     if not doc:
         return None
     if not _pid_alive(doc.get("pid")):
         return None
-    root = str(Path(repo_root).resolve())
+    root = str(root_path)
     if doc.get("repoRoot") != root:
         return None
     port = doc.get("port")
@@ -713,24 +750,22 @@ def existing_service(out_root, repo_root=REPO_ROOT) -> dict | None:
     return doc
 
 
-def start_service(*, repo_root=REPO_ROOT, out_root=None, port: int = 0,
-                  quiet: bool = False) -> tuple[GuiService | None, dict]:
+def start_service(*, repo_root=None, port: int = 0,
+                  quiet: bool = False, ui_dist=ENGINE_UI_DIST) -> tuple[GuiService | None, dict]:
     """Reuse a healthy registered service, else start one and register it."""
-    root = Path(repo_root).resolve()
-    out = Path(out_root) if out_root is not None else root / "out"
-    existing = existing_service(out, root)
+    root = Path(repo_root if repo_root is not None else workspace_root()).resolve()
+    existing = existing_service(root)
     if existing is not None:
         return None, existing
-    service = GuiService(repo_root=root, out_root=out, port=port, quiet=quiet)
+    service = GuiService(repo_root=root, ui_dist=ui_dist, port=port, quiet=quiet)
     service.start()
     return service, service.write_discovery()
 
 
 def run(*, port: int = 0, open_browser: bool = True, as_json: bool = False,
-        repo_root=REPO_ROOT, out_root=None) -> int:
+        repo_root=None) -> int:
     """``cad gui serve``: print the URL, then serve until SIGINT/SIGTERM."""
-    root = Path(repo_root).resolve()
-    out = Path(out_root) if out_root is not None else root / "out"
+    root = Path(repo_root if repo_root is not None else workspace_root()).resolve()
     stop = threading.Event()
 
     def _handle(signum, frame) -> None:
@@ -743,16 +778,16 @@ def run(*, port: int = 0, open_browser: bool = True, as_json: bool = False,
         except (ValueError, OSError):
             pass
     try:
-        return _run_service(root, out, port, open_browser, as_json, stop)
+        return _run_service(root, port, open_browser, as_json, stop)
     finally:
         for sig, handler in previous.items():
             with contextlib.suppress(ValueError, OSError):
                 signal.signal(sig, handler)
 
 
-def _run_service(root: Path, out: Path, port: int, open_browser: bool, as_json: bool,
+def _run_service(root: Path, port: int, open_browser: bool, as_json: bool,
                  stop: threading.Event) -> int:
-    service, record = start_service(repo_root=root, out_root=out, port=port)
+    service, record = start_service(repo_root=root, port=port)
     reused = service is None
     if service is None:
         service_url = record.get("url") or (
@@ -765,7 +800,7 @@ def _run_service(root: Path, out: Path, port: int, open_browser: bool, as_json: 
             "port": record["port"],
             "pid": record["pid"],
             "repoRoot": record["repoRoot"],
-            "discovery": str(discovery_path(out)),
+            "discovery": str(discovery_path(root)),
             "reused": reused,
         }), flush=True)
     elif reused:
@@ -834,7 +869,7 @@ def _build_model(service: GuiService, job: Job, project: Project, model: str,
     Returns False if the job was cancelled; raises on any failure.
     """
     spec = f"{project.name}/{model}"
-    outdir = service.out_root / project.name / model
+    outdir = model_out(project.name, model, service.repo_root)
     with _CAD_LOCK:
         if job._cancel.is_set():
             job.status = "cancelled"
@@ -948,7 +983,7 @@ def _run_physics(service: GuiService, job: Job, cmd: list[str], out: Path) -> No
             job._proc = None
     job.exitCode = code
     if out.exists():
-        job.artifacts = {"runId": _relative_to(out, service.out_root)}
+        job.artifacts = {"runId": _relative_to(out, service.repo_root)}
         service.watcher.note_run(job.artifacts["runId"])
         service.publish("artifact", {"kind": "run", "runId": job.artifacts["runId"]})
     if job.status == "cancelled" or job._cancel.is_set():
@@ -1187,7 +1222,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not _SEGMENT.fullmatch(project_name) or not _SEGMENT.fullmatch(model):
             raise _HttpError(404, f"unknown model {project_name}/{model}")
         _resolve_or_404(f"{project_name}/{model}")
-        scene_path = self.service.out_root / project_name / model / "scene" / "scene.json"
+        scene_path = (model_out(project_name, model, self.service.repo_root) / "scene"
+                      / "scene.json")
         if not scene_path.is_file():
             raise _HttpError(404, "no scene",
                              command=f"cad gui scene {project_name}/{model}")
@@ -1202,7 +1238,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "stale": bool(state.get("stale", False)),
             "error": state.get("error"),
             "job": state.get("job"),
-            "artifactBase": f"{project_name}/{model}/scene",
+            "artifactBase": _scene_base(project_name, model),
             "scene": scene,
         })
 
@@ -1258,21 +1294,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._send_json(200, {"job": job.to_dict()})
 
     def _runs(self) -> None:
-        root = self.service.out_root
         runs = []
-        if root.is_dir():
-            for current, rel, files, _ in walk_out(root):
-                if not is_run_dir(rel, files):
-                    continue
-                status = None
-                with contextlib.suppress(OSError, ValueError):
-                    status = json.loads((current / "summary.json").read_text(
-                        encoding="utf-8")).get("status")
-                modified = None
-                with contextlib.suppress(OSError):
-                    modified = (current / "summary.json").stat().st_mtime
-                runs.append({"runId": "/".join(rel),
-                             "path": str(current), "status": status, "modified": modified})
+        for current, ws_rel, rel, files, _ in walk_outputs(self.service.repo_root):
+            if not is_run_dir(rel, files):
+                continue
+            status = None
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                status = json.loads((current / "summary.json").read_text(
+                    encoding="utf-8")).get("status")
+            modified = None
+            with contextlib.suppress(OSError):
+                modified = (current / "summary.json").stat().st_mtime
+            project, model = output_owner(ws_rel)
+            runs.append({"runId": "/".join(ws_rel), "path": str(current), "status": status,
+                         "modified": modified, "project": project, "model": model})
         # Most recent first (by summary.json mtime); ties and unreadable times fall back to runId.
         runs.sort(key=lambda run: run["runId"])
         runs.sort(key=lambda run: run["modified"] or 0.0, reverse=True)
@@ -1342,8 +1377,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             paths[key] = _listed_input(project, self.service.repo_root, listing[group],
                                        value, key)
         scenario = paths["scenario"]
-        out_dir = (self.service.out_root / project.name / model / "physics"
-                   / Path(scenario).stem / _stamp())
+        out_dir = default_run_dir(project.name, model, _scenario_id(scenario),
+                                  self.service.repo_root)
         command = _physics_command(f"{project.name}/{model}", str(scenario),
                                    str(paths["acceptance"]),
                                    str(paths["options"]) if "options" in paths else None,
@@ -1398,19 +1433,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._send_json(200, request.to_status())
 
     def _artifact(self, rel: str) -> None:
-        if not rel or rel.startswith("/") or "\\" in rel or "\x00" in rel:
-            raise _HttpError(403, "forbidden artifact path")
-        parts = rel.split("/")
-        if any(part in ("", ".", "..") for part in parts):
-            raise _HttpError(403, "forbidden artifact path")
-        target = self.service.out_root / rel
-        try:
-            resolved = target.resolve(strict=True)
-        except (OSError, RuntimeError):
-            raise _HttpError(404, "artifact not found") from None
-        root = self.service.out_root.resolve()
-        if not resolved.is_relative_to(root) or not resolved.is_file():
-            raise _HttpError(403, "artifact is outside out/")
+        root = self.service.repo_root
+        resolved, _ = _resolve_output(root, rel, "artifact")
+        if not resolved.is_file():
+            raise _HttpError(403, "artifact is not a file")
         if not _artifact_allowed(self.service, resolved.relative_to(root).parts):
             raise _HttpError(403, "artifact path is not served")
         content_type = _CONTENT_TYPES.get(resolved.suffix.lower(), "application/octet-stream")
@@ -1445,27 +1471,27 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
     def _lives(self) -> None:
-        root = self.service.out_root
         lives = []
-        if root.is_dir():
-            for current, rel, _, subdirs in walk_out(root):
-                for name in [name for name in subdirs if name.endswith(".live")]:
-                    subdirs.remove(name)
-                    live_json = current / name / "live.json"
-                    doc = _watch._read_live(live_json) if _regular_file(live_json) else None
-                    if doc is None:
-                        continue
-                    modified = None
-                    with contextlib.suppress(OSError):
-                        modified = live_json.stat().st_mtime
-                    frames = doc.get("frames")
-                    if isinstance(frames, bool) or not isinstance(frames, int):
-                        frames = None
-                    status = doc.get("status")
-                    lives.append({"liveId": "/".join(rel + (name[:-len(".live")],)),
-                                  "frames": frames, "done": doc.get("done") is True,
-                                  "status": status if isinstance(status, str) else None,
-                                  "mtime": modified})
+        for current, ws_rel, _, _, subdirs in walk_outputs(self.service.repo_root):
+            for name in [name for name in subdirs if name.endswith(".live")]:
+                subdirs.remove(name)
+                live_json = current / name / "live.json"
+                doc = _watch._read_live(live_json) if _regular_file(live_json) else None
+                if doc is None:
+                    continue
+                modified = None
+                with contextlib.suppress(OSError):
+                    modified = live_json.stat().st_mtime
+                frames = doc.get("frames")
+                if isinstance(frames, bool) or not isinstance(frames, int):
+                    frames = None
+                status = doc.get("status")
+                live_parts = ws_rel + (name[:-len(".live")],)
+                project, model = output_owner(live_parts)
+                lives.append({"liveId": "/".join(live_parts),
+                              "frames": frames, "done": doc.get("done") is True,
+                              "status": status if isinstance(status, str) else None,
+                              "mtime": modified, "project": project, "model": model})
         # Most recent first (by live.json mtime); ties fall back to liveId.
         lives.sort(key=lambda live: live["liveId"])
         lives.sort(key=lambda live: live["mtime"] or 0.0, reverse=True)
@@ -1510,11 +1536,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.service.events.unsubscribe(q)
 
     def _static(self, path: str) -> None:
-        dist = self.service.repo_root / "ui" / "dist"
+        dist = self.service.ui_dist
         index = dist / "index.html"
         if not index.is_file():
             if path in ("/", "/index.html"):
-                return self._send_html(200, _FALLBACK_PAGE)
+                return self._send_html(200, _fallback_page(dist))
             raise _HttpError(404, "not found")
         rel = path.lstrip("/") or "index.html"
         if "\\" in rel or "\x00" in rel:
@@ -1556,22 +1582,55 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 # -- small helpers ---------------------------------------------------------------------
 
 
-def _resolve_run_dir(service: GuiService, run_id: str) -> Path:
-    """The run dir ``run_id`` names under ``out/``: 403 for unsafe paths, 404 unless it is a run."""
-    root = service.out_root.resolve()
-    parts = run_id.split("/")
-    if (not run_id or run_id.startswith("/") or "\\" in run_id or "\x00" in run_id
-            or any(part in ("", ".", "..") for part in parts)):
-        raise _HttpError(403, "forbidden run path")
-    candidate = service.out_root / run_id
-    if candidate.is_symlink():
-        raise _HttpError(403, "run directory is a symlink")
+def _scene_base(project_name: str, model: str) -> str:
+    """The workspace-relative artifact base of a model's scene dir."""
+    return f"projects/{project_name}/out/{model}/scene"
+
+
+def _scenario_id(scenario: Path) -> str:
+    """The scenario file's ``scenario_id`` when it is a safe dir-name segment, else its stem."""
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        value = json.loads(Path(scenario).read_text(encoding="utf-8")).get("scenario_id")
+        if isinstance(value, str) and _SEGMENT.fullmatch(value):
+            return value
+    return Path(scenario).stem
+
+
+def _resolve_output(root: Path, rel: str, what: str) -> tuple[Path, tuple[str, ...]]:
+    """``resolve_output`` with its refusals as HTTP errors: 403 forbidden, 404 missing."""
     try:
-        resolved = candidate.resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise _HttpError(404, f"unknown run {run_id}") from None
-    if not resolved.is_relative_to(root):
-        raise _HttpError(403, "run is outside out/")
+        return resolve_output(rel, root)
+    except OutputPathError as exc:
+        if exc.reason == "missing":
+            raise _HttpError(404, f"{what} not found") from None
+        raise _HttpError(403, f"forbidden {what} path") from None
+
+
+def _resolve_output_dir(service: GuiService, rel: str, what: str) -> Path:
+    """A non-symlink dir strictly below an output root.
+
+    403 for an unsafe path, a symlinked dir or one escaping its root; 404 when missing or outside
+    every output root (the same answer whether or not it exists, so nothing outside is probed).
+    """
+    root = service.repo_root
+    try:
+        parts = safe_parts(rel)
+    except OutputPathError:
+        raise _HttpError(403, f"forbidden {what} path") from None
+    if output_root_parts(parts) is None:
+        raise _HttpError(404, f"unknown {what} {rel} (not under projects/<project>/out or "
+                              f".cadstudio/fixtures)")
+    if root.joinpath(*parts).is_symlink():
+        raise _HttpError(403, f"{what} directory is a symlink")
+    resolved, base = _resolve_output(root, rel, what)
+    if resolved == root.joinpath(*base):
+        raise _HttpError(404, f"{what} not found")
+    return resolved
+
+
+def _resolve_run_dir(service: GuiService, run_id: str) -> Path:
+    """The run dir ``run_id`` names: 403 for unsafe or uncontained paths, 404 unless it is a run."""
+    resolved = _resolve_output_dir(service, run_id, "run")
     if not resolved.is_dir() or not (resolved / "summary.json").is_file() \
             or not (resolved / "states.npz").is_file():
         raise _HttpError(404, f"unknown run {run_id}")
@@ -1700,9 +1759,14 @@ def _listed_input(project: Project, repo_root: Path, entries: list[_InputFile], 
 
 
 def _artifact_allowed(service: GuiService, parts: tuple[str, ...]) -> bool:
-    if len(parts) >= 4 and parts[0] in service.project_names() and parts[2] == "scene":
+    """Whether a contained, workspace-relative file is served: a model's scene, or a sidecar."""
+    base = output_root_parts(parts)
+    if base is None:
+        return False
+    if (len(base) == 3 and len(parts) >= 6 and parts[4] == "scene"
+            and not parts[3].startswith("_") and parts[1] in service.project_names()):
         return True
-    for part in parts[:-1]:
+    for part in parts[len(base):-1]:
         if part.endswith(".gui") and part != ".gui":
             return True
         if part.endswith(".live") and part != ".live":
@@ -1744,25 +1808,11 @@ def _regular_file(path: Path) -> bool:
 
 
 def _resolve_live_dir(service: GuiService, live_id: str) -> Path:
-    """The ``<liveId>.live`` dir under ``out/``: 403 for unsafe paths, 404 unless it is live."""
-    root = service.out_root.resolve()
-    parts = live_id.split("/")
-    if (not live_id or live_id.startswith("/") or "\\" in live_id or "\x00" in live_id
-            or any(part in ("", ".", "..") for part in parts)):
+    """The ``<liveId>.live`` dir: 403 for unsafe or uncontained paths, 404 unless it is live."""
+    if not isinstance(live_id, str) or not live_id or live_id.endswith("/"):
         raise _HttpError(403, "forbidden live path")
-    candidate = service.out_root / f"{live_id}.live"
-    if candidate.is_symlink():
-        raise _HttpError(403, "live directory is a symlink")
-    try:
-        resolved = candidate.resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise _HttpError(404, f"unknown live run {live_id}") from None
-    if not resolved.is_relative_to(root):
-        raise _HttpError(403, "live run is outside out/")
+    resolved = _resolve_output_dir(service, f"{live_id}.live", "live run")
     if not resolved.is_dir() or not _regular_file(resolved / "live.json"):
         raise _HttpError(404, f"unknown live run {live_id}")
     return resolved
 
-
-def _stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

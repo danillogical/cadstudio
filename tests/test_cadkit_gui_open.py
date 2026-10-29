@@ -1,7 +1,14 @@
 """``cad gui open``: the open-request lifecycle, its HTTP routes, the CLI decisions and the ack wait (packet G5).
 
-Nothing here touches the repo's real ``out/.gui``: services live in temp dirs, and every launcher
-(``code``, ``open``, ``xdg-open``) is a fake. Port binding may be blocked by a sandbox (EPERM).
+Nothing here touches the repo's real ``.cadstudio/gui``: services live in temp workspaces, and every
+launcher (``code``, ``open``, ``xdg-open``) is a fake. Port binding may be blocked by a sandbox (EPERM).
+
+Engine signatures assumed (layout change; the workspace replaces ``out_root`` everywhere):
+- ``server.GuiService(repo_root=ws, port=, quiet=)`` with no ``out_root``;
+- ``opener.run_target(spec, ws=ws, cwd=None) -> {"run": <workspace-relative run dir>}``;
+- ``opener.OpenDeps`` has no ``out_root`` field; ``repo_root`` is the workspace;
+- ``opener.service_log_path(ws) -> ws/.cadstudio/gui/service.log``.
+A run is openable only under ``<ws>/projects/*/out/**`` or ``<ws>/.cadstudio/fixtures/**``.
 """
 from __future__ import annotations
 
@@ -22,6 +29,8 @@ from cadkit.gui import opener, server
 from cadkit.gui.opener import OpenDeps, ServiceRequestError
 from cadkit.gui.server import OpenRequestError, OpenRequestStore
 from cadkit.params import REPO_ROOT
+from layout_workspace import make_starter_workspace, project_out, write_fake_run
+from physics_workspace import workspace_env
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 GOOD_ID = "A" * 24  # well-formed but never issued
@@ -60,12 +69,12 @@ def status_of(call, *args) -> int:
 
 def test_store_create_claim_ack():
     store, clock = make_store()
-    request = store.create({"model": "pocky/syringe"})
-    assert request.state == "pending" and request.target == {"model": "pocky/syringe"}
+    request = store.create({"model": "starter/hinge"})
+    assert request.state == "pending" and request.target == {"model": "starter/hinge"}
     assert request.expiresAt == clock.t + 60.0
     assert store.status(request.id)["state"] == "pending"
     claimed = store.claim(request.id)
-    assert claimed.state == "claimed" and claimed.target == {"model": "pocky/syringe"}
+    assert claimed.state == "claimed" and claimed.target == {"model": "starter/hinge"}
     assert store.status(request.id)["state"] == "claimed"
     acked = store.ack(request.id)
     assert acked.state == "acked"
@@ -217,13 +226,15 @@ def test_store_server_defaults_match_documented_values():
 
 @pytest.fixture(scope="module")
 def svc(tmp_path_factory):
-    service = server.GuiService(out_root=tmp_path_factory.mktemp("open_out"), port=0, quiet=True)
-    service.start()
-    service.write_discovery()
-    try:
-        yield service
-    finally:
-        service.close()
+    ws = make_starter_workspace(tmp_path_factory.mktemp("open_ws"))
+    with workspace_env(ws):
+        service = server.GuiService(repo_root=ws, port=0, quiet=True)
+        service.start()
+        service.write_discovery()
+        try:
+            yield service
+        finally:
+            service.close()
 
 
 @pytest.fixture()
@@ -285,11 +296,11 @@ def test_routes_wrong_method_405(svc):
 
 def test_create_returns_id_expiry_and_target(svc):
     before = time.time()
-    status, doc = create(svc, {"model": "pocky/packet_dummy"})
+    status, doc = create(svc, {"model": "starter/box"})
     assert status == 201
     assert {"id", "expiresAt", "target"} <= set(doc)
     assert ID_RE.fullmatch(doc["id"])
-    assert doc["target"] == {"model": "pocky/packet_dummy"}
+    assert doc["target"] == {"model": "starter/box"}
     assert before + 59 <= doc["expiresAt"] <= time.time() + 61
 
 
@@ -301,9 +312,9 @@ def test_create_empty_target_and_empty_body(svc):
 
 
 @pytest.mark.parametrize("body", [
-    {"model": "pocky/packet_dummy", "extra": 1},
+    {"model": "starter/box", "extra": 1},
     {"bogus": True},
-    {"model": "pocky/packet_dummy", "run": "r1"},
+    {"model": "starter/box", "run": "r1"},
     {"model": ""},
     {"model": 5},
     {"model": None},
@@ -320,8 +331,8 @@ def test_create_non_object_and_bad_json_400(svc):
     assert http_req(svc, "POST", "/v1/open", raw=b"{nope")[0] == 400
 
 
-@pytest.mark.parametrize("spec", ["pocky/does_not_exist", "nosuchproject/x", "pocky", "a/b/c",
-                                  "../etc/passwd", "pocky/.."])
+@pytest.mark.parametrize("spec", ["starter/does_not_exist", "nosuchproject/x", "starter", "a/b/c",
+                                  "../etc/passwd", "starter/.."])
 def test_create_unknown_model_404(svc, spec):
     status, doc = create(svc, {"model": spec})
     assert status == 404 and "error" in doc
@@ -335,31 +346,45 @@ def test_create_unknown_run_404_and_traversal_403(svc):
 
 
 def test_create_run_must_be_a_run_dir(svc):
-    out = svc.out_root
-    good = out / "runs" / "r_ok"
-    good.mkdir(parents=True)
-    (good / "summary.json").write_text("{}")
-    (good / "states.npz").write_bytes(b"")
-    partial = out / "runs" / "r_partial"
+    ws = svc.repo_root
+    runs = "projects/starter/out/box/runs"
+    good = write_fake_run(ws / runs / "r_ok")
+    partial = ws / runs / "r_partial"
     partial.mkdir(parents=True)
     (partial / "summary.json").write_text("{}")
-    link = out / "runs" / "r_link"
+    link = ws / runs / "r_link"
     link.symlink_to(good, target_is_directory=True)
 
-    status, doc = create(svc, {"run": "runs/r_ok"})
-    assert status == 201 and doc["target"] == {"run": "runs/r_ok"}
-    assert create(svc, {"run": "runs/r_partial"})[0] == 404
-    assert create(svc, {"run": "runs"})[0] == 404
-    assert create(svc, {"run": "runs/r_link"})[0] == 403
+    status, doc = create(svc, {"run": f"{runs}/r_ok"})
+    assert status == 201 and doc["target"] == {"run": f"{runs}/r_ok"}
+    assert create(svc, {"run": f"{runs}/r_partial"})[0] == 404
+    assert create(svc, {"run": runs})[0] == 404
+    assert create(svc, {"run": f"{runs}/r_link"})[0] == 403
+
+
+def test_create_run_must_be_under_project_out_or_fixtures(svc):
+    ws = svc.repo_root
+    fixture = write_fake_run(ws / ".cadstudio" / "fixtures" / "drop" / "run")
+    nested = write_fake_run(project_out(ws) / "box" / "runs" / "grp" / "nested")
+    outside = write_fake_run(ws / "elsewhere" / "run")
+    in_projects = write_fake_run(ws / "projects" / "starter" / "run")  # a run dir that is not output
+    hidden = write_fake_run(ws / ".cadstudio" / "gui" / "run")
+    assert create(svc, {"run": ".cadstudio/fixtures/drop/run"})[0] == 201
+    assert create(svc, {"run": "projects/starter/out/box/runs/grp/nested"})[0] == 201
+    for rel in ("elsewhere/run", "projects/starter/run", ".cadstudio/gui/run"):
+        status, doc = create(svc, {"run": rel})
+        assert status in (403, 404), (rel, status, doc)
+    assert fixture.is_dir() and nested.is_dir() and outside.is_dir()
+    assert in_projects.is_dir() and hidden.is_dir()
 
 
 def test_claim_returns_target_and_repo_root_once(svc):
-    _, made = create(svc, {"model": "pocky/packet_dummy"})
+    _, made = create(svc, {"model": "starter/box"})
     status, doc = http_req(svc, "GET", f"/v1/open/{made['id']}")
     assert status == 200
-    assert {"id": made["id"], "target": {"model": "pocky/packet_dummy"},
+    assert {"id": made["id"], "target": {"model": "starter/box"},
             "repoRoot": str(svc.repo_root)}.items() <= doc.items()
-    assert doc["repoRoot"] == str(REPO_ROOT.resolve())
+    assert doc["repoRoot"] == str(svc.repo_root)
     status, doc = http_req(svc, "GET", f"/v1/open/{made['id']}")
     assert status == 404 and "error" in doc
 
@@ -466,7 +491,7 @@ def test_create_429_when_full(svc, clock_store):
 
 
 def test_open_routes_do_not_leak_token(svc):
-    _, made = create(svc, {"model": "pocky/packet_dummy"})
+    _, made = create(svc, {"model": "starter/box"})
     for method, path, body in [("GET", f"/v1/open/{made['id']}", None),
                                ("GET", f"/v1/open/{made['id']}/status", None)]:
         conn = http.client.HTTPConnection("127.0.0.1", svc.port, timeout=30)
@@ -509,8 +534,8 @@ def test_vscode_uri_and_gui_url():
     assert opener.vscode_uri("abc_DEF-123") == "vscode://danillogical.cadstudio/open?req=abc_DEF-123"
     record = {"port": 4321, "token": "tok"}
     assert opener.gui_url(record, None) == "http://127.0.0.1:4321/?token=tok"
-    assert opener.gui_url(record, {"model": "pocky/syringe"}) == \
-        "http://127.0.0.1:4321/?token=tok&model=pocky%2Fsyringe"
+    assert opener.gui_url(record, {"model": "starter/hinge"}) == \
+        "http://127.0.0.1:4321/?token=tok&model=starter%2Fhinge"
     assert opener.gui_url(record, {"run": "a/b"}).endswith("&run=a%2Fb")
 
 
@@ -584,7 +609,7 @@ class Harness:
             return api
 
         self.deps = OpenDeps(
-            repo_root=REPO_ROOT, out_root=Path("/nonexistent-out"), env=env or {},
+            repo_root=REPO_ROOT, env=env or {},
             which=present.get, run=runner, platform=platform, clock=self.clock.now,
             sleep=self.clock.sleep, ack_timeout_s=ack_timeout_s, ensure_service=ensure,
             api=build_api, notify=self.notes.append)
@@ -605,7 +630,7 @@ def acked_after(n):
     return lambda api: {"state": "acked" if api.status_calls > n else "pending"}
 
 
-TARGET = {"model": "pocky/syringe"}
+TARGET = {"model": "starter/hinge"}
 
 
 def test_open_vscode_acked():
@@ -751,7 +776,7 @@ def test_open_browser_editor_never_creates_a_request():
     assert result.exit_code == 0 and result.doc["opened"] == "browser"
     assert h.api_built == 0 and api.created == []
     assert h.code_cmds == [] and h.browser_cmds == [["/usr/bin/open", result.doc["url"]]]
-    assert "model=pocky%2Fsyringe" in result.doc["url"]
+    assert "model=starter%2Fhinge" in result.doc["url"]
 
 
 def test_open_browser_uses_xdg_open_on_linux():
@@ -788,7 +813,7 @@ def test_open_no_open_prints_url_only():
     h = Harness(api)
     result = h.open("vscode", TARGET, no_open=True)
     assert result.exit_code == 0 and result.doc["opened"] is None
-    assert result.doc["url"] == f"http://127.0.0.1:4555/?token={TOKEN}&model=pocky%2Fsyringe"
+    assert result.doc["url"] == f"http://127.0.0.1:4555/?token={TOKEN}&model=starter%2Fhinge"
     assert h.cmds == [] and h.api_built == 0 and api.created == []
 
 
@@ -831,69 +856,85 @@ def test_open_service_failure_is_exit_1():
 
 def test_run_rejects_bad_arguments_with_exit_2(tmp_path, capsys):
     deps = Harness(FakeApi()).deps
-    deps.out_root = tmp_path
-    assert opener.run(model="pocky/syringe", run_dir="x", deps=deps) == 2
+    deps.repo_root = tmp_path
+    assert opener.run(model="starter/hinge", run_dir="x", deps=deps) == 2
     assert opener.run(model=None, run_dir=None, editor="emacs", deps=deps) == 2
-    assert opener.run(model="pocky/does_not_exist", run_dir=None, deps=deps) == 2
+    assert opener.run(model="starter/does_not_exist", run_dir=None, deps=deps) == 2
     assert opener.run(model=None, run_dir="missing", deps=deps) == 2
     capsys.readouterr()
-    assert opener.run(model="pocky/does_not_exist", run_dir=None, as_json=True, deps=deps) == 2
+    assert opener.run(model="starter/does_not_exist", run_dir=None, as_json=True, deps=deps) == 2
     out = capsys.readouterr().out
     assert json.loads(out) == {"opened": None, "error": json.loads(out)["error"], "exit_code": 2}
 
 
 def test_run_target_rules(tmp_path):
-    out = tmp_path / "out"
-    run = out / "mj" / "r1"
-    run.mkdir(parents=True)
-    (run / "summary.json").write_text("{}")
-    (run / "states.npz").write_bytes(b"")
-    assert opener.run_target("mj/r1", out_root=out) == {"run": "mj/r1"}
-    assert opener.run_target(str(run), out_root=out) == {"run": "mj/r1"}
+    ws = tmp_path / "ws"
+    (ws / "projects").mkdir(parents=True)
+    rel = "projects/mj/out/m/runs/r1"
+    run = write_fake_run(ws / rel)
+    # Workspace-relative id, absolute path and cwd-relative path all name the same run.
+    assert opener.run_target(rel, ws=ws) == {"run": rel}
+    assert opener.run_target(str(run), ws=ws) == {"run": rel}
+    assert opener.run_target("m/runs/r1", ws=ws, cwd=ws / "projects" / "mj" / "out") == {"run": rel}
+    assert opener.run_target("r1", ws=ws, cwd=run.parent) == {"run": rel}
+    fixture = write_fake_run(ws / ".cadstudio" / "fixtures" / "drop" / "run")
+    assert opener.run_target(str(fixture), ws=ws) == {"run": ".cadstudio/fixtures/drop/run"}
+    nested = write_fake_run(ws / "projects" / "mj" / "out" / "m" / "runs" / "g" / "n")
+    assert opener.run_target(str(nested), ws=ws) == {"run": "projects/mj/out/m/runs/g/n"}
     with pytest.raises(opener.OpenError) as info:
-        opener.run_target(str(tmp_path), out_root=out)
+        opener.run_target(str(tmp_path), ws=ws)
     assert info.value.exit_code == 2
-    (out / "mj" / "notrun").mkdir()
+    (ws / "projects" / "mj" / "out" / "m" / "runs" / "notrun").mkdir()
     with pytest.raises(opener.OpenError):
-        opener.run_target("mj/notrun", out_root=out)
-    (out / "mj" / "link").symlink_to(run, target_is_directory=True)
+        opener.run_target(f"{rel[:-2]}notrun", ws=ws)
+    (ws / "projects" / "mj" / "out" / "m" / "runs" / "link").symlink_to(
+        run, target_is_directory=True)
     with pytest.raises(opener.OpenError):
-        opener.run_target("mj/link", out_root=out)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    (elsewhere / "summary.json").write_text("{}")
-    (elsewhere / "states.npz").write_bytes(b"")
-    with pytest.raises(opener.OpenError):
-        opener.run_target(str(elsewhere), out_root=out)
+        opener.run_target("projects/mj/out/m/runs/link", ws=ws)
+    # Valid run dirs outside the allowed roots are refused, wherever they are.
+    for outside in (tmp_path / "elsewhere",                        # outside the workspace
+                    ws / "elsewhere" / "run",                      # inside it, not output
+                    ws / "projects" / "mj" / "run",                # project source tree
+                    ws / ".cadstudio" / "gui" / "run",             # hidden state, not fixtures
+                    ws / "out" / "mj" / "r1"):                     # the retired top-level out/
+        write_fake_run(outside)
+        with pytest.raises(opener.OpenError) as info:
+            opener.run_target(str(outside), ws=ws)
+        assert info.value.exit_code == 2, outside
+
+
+def test_service_log_lives_in_hidden_state_dir(tmp_path):
+    assert opener.service_log_path(tmp_path) == tmp_path / ".cadstudio" / "gui" / "service.log"
+    assert server.discovery_path(tmp_path) == tmp_path / ".cadstudio" / "gui" / "service.json"
 
 
 def test_run_json_output_shape_and_exit(capsys):
     h = Harness(FakeApi(acked_after(0)))
-    code = opener.run(model="pocky/packet_dummy", run_dir=None, editor="vscode", as_json=True,
+    code = opener.run(model="starter/box", run_dir=None, editor="vscode", as_json=True,
                       deps=h.deps)
     captured = capsys.readouterr()
     assert code == 0
     doc = json.loads(captured.out)  # stdout is exactly one JSON document
     assert doc["opened"] == "vscode" and doc["exit_code"] == 0
-    assert doc["target"] == {"model": "pocky/packet_dummy"} and doc["requestId"] == REQ_ID
+    assert doc["target"] == {"model": "starter/box"} and doc["requestId"] == REQ_ID
     assert {"opened", "editor", "target", "url", "requestId", "reason", "service"} <= set(doc)
 
 
 def test_run_human_output_never_prints_the_token(capsys):
     ok = Harness(FakeApi(acked_after(0)))
-    assert opener.run(model="pocky/packet_dummy", run_dir=None, editor="vscode", deps=ok.deps) == 0
+    assert opener.run(model="starter/box", run_dir=None, editor="vscode", deps=ok.deps) == 0
     captured = capsys.readouterr()
-    assert "Opened pocky/packet_dummy in VS Code." in captured.out
+    assert "Opened starter/box in VS Code." in captured.out
     assert TOKEN not in captured.out + captured.err
 
     failed = Harness(FakeApi(lambda api: {"state": "nacked", "reason": "no"}))
-    assert opener.run(model="pocky/packet_dummy", run_dir=None, editor="vscode",
+    assert opener.run(model="starter/box", run_dir=None, editor="vscode",
                       deps=failed.deps) == 3
     captured = capsys.readouterr()
     assert TOKEN not in captured.out + captured.err and captured.out == ""
 
     browser = Harness(FakeApi(), env={"TERM_PROGRAM": "vscode"})
-    assert opener.run(model="pocky/packet_dummy", run_dir=None, deps=browser.deps) == 0
+    assert opener.run(model="starter/box", run_dir=None, deps=browser.deps) == 0
     captured = capsys.readouterr()
     assert TOKEN not in captured.out + captured.err
 
@@ -905,16 +946,6 @@ def test_run_no_open_prints_the_url(capsys):
 
 
 # -- end to end: the real CLI process against an in-process service ------------------
-
-DRIVER = '''
-import sys
-from pathlib import Path
-from cadkit.gui import opener
-# Point the default out dir at the test service's, then run the real `cad` entry point.
-opener.REPO_ROOT = Path(sys.argv[1])
-from cadkit.cli import main
-sys.exit(main(sys.argv[2:]))
-'''
 
 FAKE_CODE = f'''#!{sys.executable}
 import json, os, sys, urllib.parse, urllib.request
@@ -963,18 +994,21 @@ class E2E:
     def __init__(self, root: Path, service, bindir: Path):
         self.root = root
         self.service = service
+        self.ws = service.repo_root
         self.bindir = bindir
         self.code_log = root / "code.log"
         self.open_log = root / "open.log"
-        self.driver = root / "driver.py"
-        self.driver.write_text(DRIVER)
+
+    cwd = None
 
     def reset(self):
+        self.cwd = self.ws
         for log in (self.code_log, self.open_log):
             log.unlink(missing_ok=True)
 
     def env(self, *, mode="none", term="vscode", open_exit=0):
-        env = {k: v for k, v in os.environ.items() if k != "TERM_PROGRAM"}
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("TERM_PROGRAM", "CADSTUDIO_WORKSPACE")}
         env["PATH"] = f"{self.bindir}{os.pathsep}{env.get('PATH', '')}"
         env["PYTHONPATH"] = str(REPO_ROOT)
         env.update(FAKE_LOG=str(self.code_log), FAKE_OPEN_LOG=str(self.open_log), FAKE_MODE=mode,
@@ -985,8 +1019,10 @@ class E2E:
         return env
 
     def cad(self, *args, timeout=90, **env_kw):
-        return subprocess.run([sys.executable, str(self.driver), str(self.root), *args],
-                              cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout,
+        # The real entry point, run from inside the service's workspace: the discovery record is
+        # found at ``<ws>/.cadstudio/gui/service.json`` with no test-only override.
+        return subprocess.run([sys.executable, "-m", "cadkit.cli", *args],
+                              cwd=self.cwd, capture_output=True, text=True, timeout=timeout,
                               env=self.env(**env_kw))
 
     def code_lines(self):
@@ -1003,7 +1039,10 @@ class E2E:
 @pytest.fixture(scope="module")
 def e2e(tmp_path_factory):
     root = tmp_path_factory.mktemp("e2e")
-    service = server.GuiService(out_root=root / "out", port=0, quiet=True)
+    ws = make_starter_workspace(root)
+    env_ctx = workspace_env(ws)
+    env_ctx.__enter__()
+    service = server.GuiService(repo_root=ws, port=0, quiet=True)
     service.start()
     service.write_discovery()
     bindir = root / "bin"
@@ -1012,14 +1051,12 @@ def e2e(tmp_path_factory):
         path = bindir / name
         path.write_text(body)
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    run = service.out_root / "mj" / "r1"
-    run.mkdir(parents=True)
-    (run / "summary.json").write_text("{}")
-    (run / "states.npz").write_bytes(b"")
+    write_fake_run(project_out(ws) / "box" / "runs" / "r1")
     try:
         yield E2E(root, service, bindir)
     finally:
         service.close()
+        env_ctx.__exit__(None, None, None)
 
 
 @pytest.fixture()
@@ -1033,41 +1070,57 @@ def request_state(e2e, request_id):
 
 
 def test_e2e_vscode_acked(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", "--json", mode="ack")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", "--json", mode="ack")
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["opened"] == "vscode" and doc["exit_code"] == 0 and doc["reason"] is None
-    assert doc["target"] == {"model": "pocky/packet_dummy"}
+    assert doc["target"] == {"model": "starter/box"}
     assert doc["service"]["port"] == fresh.service.port and doc["service"]["started"] is False
     assert doc["url"].startswith(f"http://127.0.0.1:{fresh.service.port}/?token=")
     assert {"opened", "editor", "target", "url", "requestId", "reason", "service"} <= set(doc)
     lines = fresh.code_lines()
     assert lines[0]["argv"] == ["--open-url",
                                 f"vscode://danillogical.cadstudio/open?req={doc['requestId']}"]
-    assert lines[1]["claimed"]["repoRoot"] == str(REPO_ROOT.resolve())
-    assert lines[1]["claimed"]["target"] == {"model": "pocky/packet_dummy"}
+    assert lines[1]["claimed"]["repoRoot"] == str(fresh.ws)
+    assert lines[1]["claimed"]["target"] == {"model": "starter/box"}
     assert request_state(fresh, doc["requestId"])["state"] == "acked"
     assert fresh.open_lines() == []  # no browser was launched
 
 
 def test_e2e_vscode_acked_human_output_hides_token(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", mode="ack")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", mode="ack")
     assert r.returncode == 0, r.stderr
-    assert r.stdout.strip() == "Opened pocky/packet_dummy in VS Code."
+    assert r.stdout.strip() == "Opened starter/box in VS Code."
     assert fresh.service.token not in r.stdout + r.stderr
 
 
 def test_e2e_run_target_acked(fresh):
-    r = fresh.cad("gui", "open", "--run", "mj/r1", "--editor", "vscode", "--json", mode="ack")
+    run_id = "projects/starter/out/box/runs/r1"
+    r = fresh.cad("gui", "open", "--run", run_id, "--editor", "vscode", "--json", mode="ack")
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
-    assert doc["opened"] == "vscode" and doc["target"] == {"run": "mj/r1"}
-    assert fresh.code_lines()[1]["claimed"]["target"] == {"run": "mj/r1"}
+    assert doc["opened"] == "vscode" and doc["target"] == {"run": run_id}
+    assert fresh.code_lines()[1]["claimed"]["target"] == {"run": run_id}
+
+
+def test_e2e_run_target_accepts_cwd_relative_path(fresh):
+    fresh.cwd = fresh.ws / "projects" / "starter" / "out" / "box"
+    r = fresh.cad("gui", "open", "--run", "runs/r1", "--editor", "vscode", "--json", mode="ack")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["target"] == {"run": "projects/starter/out/box/runs/r1"}
+
+
+def test_e2e_run_target_outside_allowed_roots_exits_2(fresh):
+    outside = write_fake_run(fresh.root / "elsewhere" / "run")
+    r = fresh.cad("gui", "open", "--run", str(outside), "--editor", "vscode", "--json", mode="ack")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert json.loads(r.stdout)["opened"] is None
+    assert fresh.code_lines() == []
 
 
 def test_e2e_vscode_nack_exits_3_quickly(fresh):
     start = time.monotonic()
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", "--json", mode="nack")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", "--json", mode="nack")
     assert time.monotonic() - start < 9.0
     assert r.returncode == 3
     doc = json.loads(r.stdout)
@@ -1077,7 +1130,7 @@ def test_e2e_vscode_nack_exits_3_quickly(fresh):
 
 
 def test_e2e_code_launch_failure_exits_3_and_redacts(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", "--json", mode="exit1")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", "--json", mode="exit1")
     assert r.returncode == 3
     doc = json.loads(r.stdout)
     assert doc["opened"] is None
@@ -1087,7 +1140,7 @@ def test_e2e_code_launch_failure_exits_3_and_redacts(fresh):
 
 def test_e2e_vscode_silence_times_out_after_10s_and_withdraws_request(fresh):
     start = time.monotonic()
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "vscode", "--json", mode="none")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "vscode", "--json", mode="none")
     elapsed = time.monotonic() - start
     assert r.returncode == 3
     doc = json.loads(r.stdout)
@@ -1101,17 +1154,17 @@ def test_e2e_vscode_silence_times_out_after_10s_and_withdraws_request(fresh):
 
 
 def test_e2e_auto_in_vscode_terminal_nack_falls_back_to_browser(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--json", mode="nack", term="vscode")
+    r = fresh.cad("gui", "open", "starter/box", "--json", mode="nack", term="vscode")
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["opened"] == "browser" and "wrong window" in doc["reason"]
     assert fresh.open_lines() == [[doc["url"]]]
-    assert "model=pocky%2Fpacket_dummy" in doc["url"]
+    assert "model=starter%2Fbox" in doc["url"]
     assert fresh.service.token not in r.stderr  # stderr explains the fallback without the URL
 
 
 def test_e2e_auto_outside_vscode_terminal_skips_code(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--json", mode="ack", term=None)
+    r = fresh.cad("gui", "open", "starter/box", "--json", mode="ack", term=None)
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["opened"] == "browser" and doc["requestId"] is None
@@ -1120,36 +1173,36 @@ def test_e2e_auto_outside_vscode_terminal_skips_code(fresh):
 
 
 def test_e2e_browser_editor_and_launch_failure(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "browser", "--json")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "browser", "--json")
     assert r.returncode == 0 and json.loads(r.stdout)["opened"] == "browser"
     assert fresh.code_lines() == []
     fresh.reset()
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "browser", "--json", open_exit=1)
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "browser", "--json", open_exit=1)
     assert r.returncode == 3
     assert json.loads(r.stdout)["opened"] is None
 
 
 def test_e2e_no_open(fresh):
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--no-open", "--json")
+    r = fresh.cad("gui", "open", "starter/box", "--no-open", "--json")
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["opened"] is None and f"token={fresh.service.token}" in doc["url"]
     assert fresh.code_lines() == [] and fresh.open_lines() == []
-    plain = fresh.cad("gui", "open", "pocky/packet_dummy", "--no-open")
+    plain = fresh.cad("gui", "open", "starter/box", "--no-open")
     assert plain.returncode == 0
     assert plain.stdout.strip().startswith("http://127.0.0.1:") and plain.stderr == ""
 
 
 def test_e2e_usage_errors_exit_2(fresh):
-    r = fresh.cad("gui", "open", "pocky/does_not_exist", "--json")
+    r = fresh.cad("gui", "open", "starter/does_not_exist", "--json")
     assert r.returncode == 2
     doc = json.loads(r.stdout)
     assert doc["opened"] is None and doc["exit_code"] == 2 and doc["error"]
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--run", "mj/r1", "--json")
+    r = fresh.cad("gui", "open", "starter/box", "--run", "projects/starter/out/box/runs/r1", "--json")
     assert r.returncode == 2
-    r = fresh.cad("gui", "open", "--run", "mj/missing", "--json")
+    r = fresh.cad("gui", "open", "--run", "projects/starter/out/box/runs/missing", "--json")
     assert r.returncode == 2
-    r = fresh.cad("gui", "open", "pocky/packet_dummy", "--editor", "emacs")
+    r = fresh.cad("gui", "open", "starter/box", "--editor", "emacs")
     assert r.returncode == 2
     assert fresh.code_lines() == [] and fresh.open_lines() == []
 

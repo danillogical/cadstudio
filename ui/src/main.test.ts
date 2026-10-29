@@ -10,6 +10,7 @@ import type { LiveDoc, ServiceEvent, TrajectoryResponse } from "./transport/type
 
 const hoisted = vi.hoisted(() => ({
   transport: null as unknown,
+  vscode: true,
 }));
 
 vi.mock("./viewport/viewport", () => {
@@ -59,7 +60,7 @@ vi.mock("./transport/browser", () => ({
 }));
 
 vi.mock("./transport/vscode", () => ({
-  hasVsCodeApi: () => true,
+  hasVsCodeApi: () => hoisted.vscode,
   VsCodeTransport: { fromWebview: () => hoisted.transport },
 }));
 
@@ -101,6 +102,18 @@ function liveDoc(frames: number): LiveDoc {
   };
 }
 
+type Projects = Record<string, string[]>;
+const TWO_PROJECTS: Projects = { p: ["m", "n"], q: ["a", "b"] };
+
+// A `/v1/models` body: per-project bare names plus the flat `<project>/<model>` list.
+function modelList(projects: Projects) {
+  return {
+    schemaVersion: 1,
+    projects: Object.entries(projects).map(([name, models]) => ({ name, params_path: `projects/${name}/params.toml`, models })),
+    models: Object.entries(projects).flatMap(([name, models]) => models.map((m) => `${name}/${m}`)),
+  };
+}
+
 function makeTransport() {
   let listener: (event: ServiceEvent) => void = () => {};
   let navigate: (target: { model: string } | { run: string }) => void = () => {};
@@ -109,12 +122,14 @@ function makeTransport() {
     follow: vi.fn(async (model: string) => ({ model, expiresAt: 0, leaseSeconds: 60, following: [] })),
     unfollow: vi.fn(async (_model: string) => {}),
     health: vi.fn(async () => ({ schemaVersion: 1, service: "cadstudio", protocolVersion: 1, repoRoot: "/r", pid: 1 })),
-    listModels: vi.fn(async () => ({ schemaVersion: 1, projects: [], models: ["p/m", "p/n"] })),
+    listModels: vi.fn(async () => modelList(TWO_PROJECTS)),
     listRuns: vi.fn(async () => ({
       schemaVersion: 1,
       runs: [
-        { runId: "p/runs/a", path: "out/p/runs/a", status: "pass", modified: 1 },
-        { runId: "p/runs/b", path: "out/p/runs/b", status: "pass", modified: 2 },
+        { runId: "p/runs/a", path: "out/p/runs/a", status: "pass", modified: 1, project: "p", model: "p/m" },
+        { runId: "p/runs/b", path: "out/p/runs/b", status: "pass", modified: 2, project: "p", model: "p/n" },
+        { runId: "q/runs/c", path: "out/q/runs/c", status: "pass", modified: 3, project: "q", model: "q/a" },
+        { runId: "fixture/d", path: "out/fixture/d", status: "pass", modified: 4, project: null, model: null },
       ],
     })),
     listLive: vi.fn(async () => ({ lives: [] })),
@@ -170,16 +185,30 @@ async function boot(prepare: (t: Fake) => void = () => {}): Promise<Fake> {
   return t;
 }
 
+async function pickProject(project: string) {
+  const picker = $<HTMLSelectElement>("project-picker");
+  picker.value = project;
+  picker.dispatchEvent(new Event("change"));
+  await flush();
+}
+
+// Choose the model's project first, as a user must, then the model itself.
 async function pickModel(model: string) {
+  await pickProject(model.split("/")[0]);
   const picker = $<HTMLSelectElement>("model-picker");
   picker.value = model;
   picker.dispatchEvent(new Event("change"));
   await flush();
 }
 
+const optionValues = (id: string) => [...$<HTMLSelectElement>(id).options].map((o) => o.value);
+const realOptionValues = (id: string) => optionValues(id).filter((v) => v !== "");
+
 beforeEach(() => {
   vi.useFakeTimers();
   sessionStorage.clear();
+  hoisted.vscode = true;
+  window.history.replaceState({}, "", "/");
 });
 
 afterEach(() => {
@@ -229,7 +258,7 @@ describe("main: follow", () => {
 
   it("follows a lone model right away", async () => {
     const t = await boot((fake) => {
-      fake.listModels.mockResolvedValue({ schemaVersion: 1, projects: [], models: ["p/m"] });
+      fake.listModels.mockResolvedValue(modelList({ p: ["m"] }));
     });
     expect(t.follow.mock.calls).toEqual([["p/m"]]);
   });
@@ -350,10 +379,152 @@ describe("main: navigate to a run", () => {
     expect($<HTMLSelectElement>("model-picker").value).toBe("p/n");
     expect(t.follow.mock.calls).toEqual([["p/n"]]);
   });
+
+  it("navigating to a model in another project switches the project select too", async () => {
+    const t = await boot();
+    t.navigate({ model: "q/b" });
+    await advance(100);
+    expect($<HTMLSelectElement>("project-picker").value).toBe("q");
+    expect($<HTMLSelectElement>("model-picker").value).toBe("q/b");
+    expect(realOptionValues("model-picker")).toEqual(["q/a", "q/b"]);
+    expect(t.follow.mock.calls).toEqual([["q/b"]]);
+  });
+
+  it("?model=q%2Fb at startup selects project q and model q/b", async () => {
+    hoisted.vscode = false;
+    window.history.replaceState({}, "", "/?model=q%2Fb");
+    const t = await boot();
+    expect($<HTMLSelectElement>("project-picker").value).toBe("q");
+    expect($<HTMLSelectElement>("model-picker").value).toBe("q/b");
+    expect(t.follow.mock.calls).toEqual([["q/b"]]);
+  });
+});
+
+describe("main: project and model pickers", () => {
+  it("has a Project select and a Model select, each with its label", async () => {
+    await boot();
+    expect($<HTMLSelectElement>("project-picker").tagName).toBe("SELECT");
+    expect($<HTMLSelectElement>("model-picker").tagName).toBe("SELECT");
+    expect(document.querySelector('label[for="project-picker"]')?.textContent).toBe("Project");
+    expect(document.querySelector('label[for="model-picker"]')?.textContent).toBe("Model");
+  });
+
+  it("lists every project and leaves the model select empty until one is chosen", async () => {
+    const t = await boot();
+    expect(realOptionValues("project-picker")).toEqual(["p", "q"]);
+    expect($<HTMLSelectElement>("project-picker").value).toBe("");
+    expect(realOptionValues("model-picker")).toEqual([]);
+    expect(t.follow).not.toHaveBeenCalled();
+  });
+
+  it("choosing a project fills the model select with only its models, full-spec values and bare text", async () => {
+    const t = await boot();
+    await pickProject("q");
+    const picker = $<HTMLSelectElement>("model-picker");
+    expect(optionValues("model-picker")[0]).toBe(""); // placeholder first
+    expect(realOptionValues("model-picker")).toEqual(["q/a", "q/b"]);
+    expect([...picker.options].filter((o) => o.value).map((o) => o.textContent)).toEqual(["a", "b"]);
+    expect(picker.value).toBe("");
+    expect(t.follow).not.toHaveBeenCalled();
+    await pickProject("p");
+    expect(realOptionValues("model-picker")).toEqual(["p/m", "p/n"]);
+  });
+
+  it("choosing a model loads its scene, follows it and sets the jobs model", async () => {
+    const t = await boot();
+    await pickProject("q");
+    const picker = $<HTMLSelectElement>("model-picker");
+    picker.value = "q/b";
+    picker.dispatchEvent(new Event("change"));
+    await flush();
+    expect(t.follow.mock.calls).toEqual([["q/b"]]);
+    expect(t.getScene).toHaveBeenCalledWith("q/b");
+    expect(t.listPhysicsInputs).toHaveBeenCalledWith("q/b");
+  });
+
+  it("a project with exactly one model auto-selects and loads it", async () => {
+    const t = await boot((fake) => {
+      fake.listModels.mockResolvedValue(modelList({ p: ["m", "n"], solo: ["only"] }));
+    });
+    await pickProject("solo");
+    expect($<HTMLSelectElement>("model-picker").value).toBe("solo/only");
+    expect(t.follow.mock.calls).toEqual([["solo/only"]]);
+    expect(t.getScene).toHaveBeenCalledWith("solo/only");
+  });
+
+  it("a workspace with exactly one project auto-selects that project", async () => {
+    const t = await boot((fake) => {
+      fake.listModels.mockResolvedValue(modelList({ p: ["m", "n"] }));
+    });
+    expect($<HTMLSelectElement>("project-picker").value).toBe("p");
+    expect(realOptionValues("model-picker")).toEqual(["p/m", "p/n"]);
+    expect($<HTMLSelectElement>("model-picker").value).toBe("");
+    expect(t.follow).not.toHaveBeenCalled();
+  });
+
+  it("a workspace with one project holding one model selects and follows both", async () => {
+    const t = await boot((fake) => {
+      fake.listModels.mockResolvedValue(modelList({ p: ["m"] }));
+    });
+    expect($<HTMLSelectElement>("project-picker").value).toBe("p");
+    expect($<HTMLSelectElement>("model-picker").value).toBe("p/m");
+    expect(t.follow.mock.calls).toEqual([["p/m"]]);
+  });
+});
+
+describe("main: run picker is scoped to the selected model", () => {
+  it("lists no runs while no model is selected", async () => {
+    await boot();
+    expect(realOptionValues("run-picker")).toEqual([]);
+  });
+
+  it("lists only the runs of the selected model", async () => {
+    await boot();
+    await pickModel("p/m");
+    await advance(100);
+    expect(realOptionValues("run-picker")).toEqual(["p/runs/a"]);
+    await pickModel("q/a");
+    await advance(100);
+    expect(realOptionValues("run-picker")).toEqual(["q/runs/c"]);
+  });
+
+  it("lists nothing for a model without runs, and never the model-less fixture runs", async () => {
+    await boot();
+    await pickModel("q/b");
+    await advance(100);
+    expect(realOptionValues("run-picker")).toEqual([]);
+    await pickModel("p/n");
+    await advance(100);
+    expect(realOptionValues("run-picker")).toEqual(["p/runs/b"]);
+    expect(realOptionValues("run-picker")).not.toContain("fixture/d");
+  });
+});
+
+describe("main: follow switches both selects", () => {
+  it("a scene artifact for a model in another project switches project and model", async () => {
+    const t = await boot();
+    await pickModel("p/m");
+    t.follow.mockClear();
+    t.emit({ type: "artifact", kind: "scene", model: "q/b" });
+    await advance(100);
+    expect($<HTMLSelectElement>("project-picker").value).toBe("q");
+    expect($<HTMLSelectElement>("model-picker").value).toBe("q/b");
+    expect(t.follow.mock.calls.at(-1)).toEqual(["q/b"]);
+  });
+
+  it("a run artifact of a model in another project switches project and model, then opens the run", async () => {
+    const t = await boot();
+    await pickModel("p/m");
+    t.emit({ type: "artifact", kind: "run", runId: "q/runs/c" });
+    await advance(200);
+    expect($<HTMLSelectElement>("project-picker").value).toBe("q");
+    expect($<HTMLSelectElement>("model-picker").value).toBe("q/a");
+    expect(t.getTrajectory).toHaveBeenCalledWith("q/runs/c");
+  });
 });
 
 describe("main: model list refresh", () => {
-  const MORE = { schemaVersion: 1, projects: [], models: ["p/m", "p/n", "p/new"] };
+  const MORE = modelList({ p: ["m", "n", "new"], q: ["a", "b"] });
   const pickerValues = () => [...$<HTMLSelectElement>("model-picker").options].map((o) => o.value);
 
   it("navigate to an unlisted model lists the models again, then selects it", async () => {
@@ -364,6 +535,7 @@ describe("main: model list refresh", () => {
     t.navigate({ model: "p/new" });
     await advance(100);
     expect(t.listModels).toHaveBeenCalledTimes(2);
+    expect($<HTMLSelectElement>("project-picker").value).toBe("p");
     expect($<HTMLSelectElement>("model-picker").value).toBe("p/new");
     expect(t.follow.mock.calls).toEqual([["p/new"]]);
     // The fake getScene rejects, so the banner may show that error, but never "Unknown model".

@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .params import REPO_ROOT
+from .workspace import ENGINE_ROOT, WorkspaceError, state_root, workspace_root
 
 MIN_PYTHON = (3, 11)
 MIN_NODE_MAJOR = 22
@@ -79,8 +79,10 @@ def _python() -> dict:
     }
 
 
-def _output_dir(repo_root: Path) -> dict:
-    path = repo_root / "out"
+def _output_dir(workspace: Path | None, error: str | None = None) -> dict:
+    if workspace is None:
+        return {"path": None, "writable": False, "required": True, "ok": False, "error": error}
+    path = state_root(workspace)
     writable = False
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -96,9 +98,20 @@ def _presence(path: Path, kind: str, *, required: bool = False) -> dict:
     return {"path": str(path), "present": present, "required": required, "ok": present}
 
 
-def collect(repo_root: Path = REPO_ROOT) -> dict:
-    """Build the doctor report; ``ok`` covers only the required checks."""
-    root = Path(repo_root)
+def collect(workspace: Path | None = None, engine_root: Path = ENGINE_ROOT) -> dict:
+    """Build the doctor report; ``ok`` covers only the required checks.
+
+    ``output_dir`` is the workspace's hidden state dir ``.cadstudio/`` (default: the current
+    workspace), which must be writable; model outputs go to each project's own ``out/``. The UI
+    and extension builds belong to the engine checkout.
+    """
+    error = None
+    if workspace is None:
+        try:
+            workspace = workspace_root()
+        except WorkspaceError as exc:
+            error = str(exc)
+    engine = Path(engine_root)
     checks = {
         "python": _python(),
         "uv": _tool("uv"),
@@ -106,10 +119,10 @@ def collect(repo_root: Path = REPO_ROOT) -> dict:
         "mujoco": _package("mujoco"),
         "node": _tool("node", min_major=MIN_NODE_MAJOR),
         "npm": _tool("npm"),
-        "output_dir": _output_dir(root),
-        "ui_dist": _presence(root / "ui" / "dist", "dir"),
+        "output_dir": _output_dir(Path(workspace) if workspace is not None else None, error),
+        "ui_dist": _presence(engine / "ui" / "dist", "dir"),
         "extension_build": _presence(
-            root / ".vscode" / "extensions" / "cadstudio" / "dist" / "extension.js", "file"),
+            engine / ".vscode" / "extensions" / "cadstudio" / "dist" / "extension.js", "file"),
     }
     return {"ok": all(c["ok"] for c in checks.values() if c["required"]), "checks": checks}
 
@@ -124,7 +137,9 @@ def format_text(report: dict) -> str:
             if check.get("path"):
                 detail += f" ({check['path']})"
         elif "writable" in check:
-            detail = "writable" if check["writable"] else "not writable"
+            detail = check.get("error") or ("writable" if check["writable"] else "not writable")
+            if check.get("path"):
+                detail += f" ({check['path']})"
         else:
             detail = "present" if check["present"] else "absent"
         lines.append(f"{name:<16} {flag:<4} {detail}")

@@ -42,19 +42,19 @@ def _run_blocked(argv, timeout=240):
 def test_cad_list_works_without_mujoco():
     r = _run_blocked(["list"])
     assert r.returncode == 0, r.stderr
-    assert "pocky/prototype" in r.stdout
+    assert "starter/box" in r.stdout
 
 
 def test_cad_check_works_without_mujoco(tmp_path):
-    r = _run_blocked(["check", "armor/demo_cube", "--out", str(tmp_path)])
+    r = _run_blocked(["check", "starter/box", "--out", str(tmp_path)])
     assert r.returncode == 0, r.stdout + r.stderr
     assert (tmp_path / "report.json").is_file()
 
 
 def test_cad_build_works_without_mujoco(tmp_path):
-    r = _run_blocked(["build", "armor/demo_cube", "--out", str(tmp_path)])
+    r = _run_blocked(["build", "starter/box", "--out", str(tmp_path)])
     assert r.returncode == 0, r.stdout + r.stderr
-    assert (tmp_path / "cube.step").is_file()
+    assert (tmp_path / "tray.step").is_file()
 
 
 def test_physics_smoke_without_extra_is_actionable(tmp_path):

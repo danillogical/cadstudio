@@ -11,8 +11,9 @@ from pathlib import Path
 
 from .checks import format_report, has_failures, run_checks, write_report
 from .export import export_assembly, export_part
-from .params import REPO_ROOT, override
+from .params import override
 from .project import Project, all_models, discover, list_models, load_model, resolve
+from .workspace import WorkspaceError, default_run_dir, fixtures_root, model_out
 
 
 # Local copy so the argparse hook can use it without importing the physics package.
@@ -63,7 +64,7 @@ def _build_parts(args, project: Project, model: str, p):
 
 
 def _outdir(args, project: Project, model: str) -> Path:
-    return Path(args.out) if args.out else REPO_ROOT / "out" / project.name / model
+    return Path(args.out) if args.out else model_out(project.name, model)
 
 
 @contextlib.contextmanager
@@ -640,11 +641,7 @@ def _read_options(path: str) -> tuple[str, dict]:
 
 
 def _fresh_run_dir(project, model, scenario_id: str):
-    from datetime import datetime, timezone
-
-    parent = _physics_outdir(project, model).parent / scenario_id
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    return parent / stamp
+    return default_run_dir(project.name, model, scenario_id)
 
 
 def _physics_run(args) -> int:
@@ -770,15 +767,11 @@ def _physics_replay(args) -> int:
 
 
 def _fixture_outdir():
-    from .params import REPO_ROOT
-
-    return REPO_ROOT / "out" / "fixtures" / "m2a_asymmetric" / "physics" / "export"
+    return fixtures_root() / "m2a_asymmetric" / "physics" / "export"
 
 
 def _physics_outdir(project, model):
-    from .params import REPO_ROOT
-
-    return REPO_ROOT / "out" / project.name / model / "physics" / "export"
+    return model_out(project.name, model) / "physics" / "export"
 
 
 def json_status(status: str, scenario: str, detail: str = "") -> str:
@@ -803,7 +796,7 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--params", help="params TOML (default: the project's params file)")
         sp.add_argument("--set", nargs="+", action="extend", metavar="KEY=VAL",
                         help="override params, e.g. structure.min_wall=2.0")
-        sp.add_argument("--out", help="output dir (default out/<project>/<model>)")
+        sp.add_argument("--out", help="output dir (default projects/<project>/out/<model>)")
         if name in ("build", "render"):
             sp.add_argument("--views", choices=VIEW_SETS, default="all",
                             help="render set: standard (iso/front/back/top), detail, sections or all")
@@ -826,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
     scene.add_argument("--params", help="params TOML (default: the project's params file)")
     scene.add_argument("--set", nargs="+", action="extend", metavar="KEY=VAL",
                        help="override params, e.g. structure.min_wall=2.0")
-    scene.add_argument("--out", help="scene dir (default out/<project>/<model>/scene)")
+    scene.add_argument("--out", help="scene dir (default projects/<project>/out/<model>/scene)")
     scene.add_argument("--json", action="store_true", help="print one JSON document on stdout")
     scene.set_defaults(fn=cmd_gui)
 
@@ -852,7 +845,8 @@ def main(argv: list[str] | None = None) -> int:
     gui_open.add_argument("model", nargs="?",
                           help="<project>/<model>, or a bare <model> unique across projects")
     gui_open.add_argument("--run", dest="run_dir", metavar="RUN_DIR",
-                          help="a `cad physics run` output directory under out/")
+                          help="a `cad physics run` directory under projects/<project>/out/ or "
+                               ".cadstudio/fixtures/ (absolute, cwd- or workspace-relative)")
     gui_open.add_argument("--editor", choices=("auto", "vscode", "browser"), default="auto",
                           help="auto (default): VS Code from its terminal, else the browser")
     gui_open.add_argument("--no-open", action="store_true",
@@ -863,7 +857,7 @@ def main(argv: list[str] | None = None) -> int:
     phys = sub.add_parser("physics", help="optional rigid-body physics (needs --extra physics)")
     phys_sub = phys.add_subparsers(dest="verb", required=True)
     smoke = phys_sub.add_parser("smoke", help="headless primitive gravity drop/settle fixture")
-    smoke.add_argument("--out", help="output dir (default out/fixtures/gravity_drop/physics/<run-id>)")
+    smoke.add_argument("--out", help="output dir (default .cadstudio/fixtures/gravity_drop/physics/<run-id>)")
     smoke.add_argument("--edge-mm", type=float, default=20.0, help="box edge, mm (default 20)")
     smoke.add_argument("--density", type=float, default=1.27, help="g/cm3 (default 1.27)")
     smoke.add_argument("--clearance", type=float, default=100.0,
@@ -879,22 +873,22 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("--params", help="params TOML (default: the project's params file)")
     export.add_argument("--set", nargs="+", action="extend", metavar="KEY=VAL",
                         help="override params, e.g. structure.min_wall=2.0")
-    export.add_argument("--out", help="output dir (default out/<project>/<model>/physics/export)")
+    export.add_argument("--out", help="output dir (default projects/<project>/out/<model>/physics/export)")
     export.set_defaults(fn=cmd_physics)
 
     fixture = phys_sub.add_parser(
         "fixture", help="export the built-in generic asymmetric CAD assembly")
-    fixture.add_argument("--out", help="output dir (default out/fixtures/m2a_asymmetric/physics/export)")
+    fixture.add_argument("--out", help="output dir (default .cadstudio/fixtures/m2a_asymmetric/physics/export)")
     fixture.set_defaults(fn=cmd_physics)
 
     channel = phys_sub.add_parser(
         "channel", help="hollow-channel collider-fidelity evidence (validation + live passage)")
-    channel.add_argument("--out", help="output dir (default out/fixtures/m2b_u_channel/physics/<run-id>)")
+    channel.add_argument("--out", help="output dir (default .cadstudio/fixtures/m2b_u_channel/physics/<run-id>)")
     channel.set_defaults(fn=cmd_physics)
 
     mechanics = phys_sub.add_parser(
         "mechanics", help="loaded-spring return and hinge-oscillator period evidence")
-    mechanics.add_argument("--out", help="output dir (default out/fixtures/m3_mechanics/physics/<run-id>)")
+    mechanics.add_argument("--out", help="output dir (default .cadstudio/fixtures/m3_mechanics/physics/<run-id>)")
     mechanics.add_argument("--timestep", type=float, default=1.0e-3, help="s (default 0.001)")
     mechanics.set_defaults(fn=cmd_physics)
 
@@ -902,7 +896,7 @@ def main(argv: list[str] | None = None) -> int:
         "scenario", help="run a strict JSON generic scenario through the M4a phase runner")
     scenario.add_argument("scenario", help="scenario JSON path")
     scenario.add_argument("--acceptance", required=True, help="frozen acceptance JSON path")
-    scenario.add_argument("--out", help="run directory (default out/fixtures/m4a/..."
+    scenario.add_argument("--out", help="run directory (default .cadstudio/fixtures/m4a/"
                                         "<scenario>/physics/<run-id>)")
     scenario.set_defaults(fn=cmd_physics)
 
@@ -914,8 +908,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--options", help="strict TOML assembly options (scalars/arrays, <=64 KiB)")
     run.add_argument("--params", help="params TOML (default: the project's)")
     run.add_argument("--set", action="append", metavar="KEY=VAL", help="override a parameter")
-    run.add_argument("--out", help="run directory, must not exist (default "
-                                   "out/<project>/<model>/physics/<scenario_id>/<run-id>)")
+    run.add_argument("--out", help="run directory, must not exist (default projects/<project>/"
+                                   "out/<model>/runs/<scenario_id>-<UTC stamp>)")
     run.add_argument("--no-live", dest="live", action="store_false",
                      help="do not stream poses to the <run>.live/ sidecar while running")
     run.add_argument("--live-fps", type=float, default=None, metavar="N",
@@ -938,8 +932,23 @@ def main(argv: list[str] | None = None) -> int:
             print(json_status("ERROR", "cli", "usage error"))
             raise SystemExit(EXIT_CODES_PHYSICS["ERROR"]) from None
         raise
-    code = args.fn(args)
+    try:
+        code = args.fn(args)
+    except WorkspaceError as exc:
+        code = _workspace_failure(args, words, exc)
     sys.exit(code)
+
+
+def _workspace_failure(args, words: list[str], exc: WorkspaceError) -> int:
+    """No workspace: a one-line error on stderr, and the command's usual JSON shape if any."""
+    msg = f"cad: {exc}"
+    print(msg, file=sys.stderr)
+    if words[:1] == ["physics"]:
+        print(json_status("ERROR", "cli", str(exc)))
+        return EXIT_CODES_PHYSICS["ERROR"]
+    if getattr(args, "json", False):
+        _emit_json({"error": str(exc), "exit_code": 1})
+    return 1
 
 
 if __name__ == "__main__":

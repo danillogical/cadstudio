@@ -2,6 +2,9 @@
 
 The service runs in a subprocess over an isolated tiny repo; builds are stubbed with a process
 that logs its start, so the number of builds is the number of lines in ``calls.log``.
+
+Layout: a project's outputs live in ``<ws>/projects/<p>/out/<m>/`` (scenes in ``scene/``, runs
+and their ``.live`` sidecars under ``runs/``); ids are workspace-relative paths.
 """
 from __future__ import annotations
 
@@ -17,20 +20,23 @@ LEASE = 3.0
 LIVE_INTERVAL = 0.3
 MODEL = f"{PROJECT}/box"
 MODEL2 = f"{PROJECT}/box2"
+OUT_REL = f"projects/{PROJECT}/out"  # workspace-relative project output dir
+RUNS_REL = f"{OUT_REL}/box/runs"
 
 
 @pytest.fixture(scope="module")
 def tiny(tmp_path_factory):
     root = tmp_path_factory.mktemp("watch")
     repo = make_repo(root)
-    out = repo / "out"
+    out = repo / OUT_REL
+    runs = out / "box" / "runs"
     # Pre-existing artifacts: none of these may ever be announced.
-    write_atomic(out / PROJECT / "pre" / "scene" / "scene.json", "{}")
-    (out / PROJECT / "oldrun").mkdir(parents=True)
-    (out / PROJECT / "oldrun" / "summary.json").write_text('{"status": "PASS"}')
-    (out / PROJECT / "oldrun" / "states.npz").write_bytes(b"x")
-    write_atomic(out / PROJECT / "oldlive.live" / "live.json", '{"frames": 1, "done": true}')
-    (out / PROJECT / "oldlive.live" / "poses.bin").write_bytes(b"\0" * 56)
+    write_atomic(out / "pre" / "scene" / "scene.json", "{}")
+    (runs / "oldrun").mkdir(parents=True)
+    (runs / "oldrun" / "summary.json").write_text('{"status": "PASS"}')
+    (runs / "oldrun" / "states.npz").write_bytes(b"x")
+    write_atomic(runs / "oldlive.live" / "live.json", '{"frames": 1, "done": true}')
+    (runs / "oldlive.live" / "poses.bin").write_bytes(b"\0" * 56)
     work = root / "work"
     work.mkdir()
     svc = TinyService(repo, work, stub=True, watch_interval=0.1, watch_debounce=DEBOUNCE,
@@ -185,6 +191,24 @@ def test_pycache_and_dot_dirs_do_not_trigger_rebuilds(quiet):
     assert len(quiet.calls()) - n0 == 1
 
 
+def test_writes_under_project_out_do_not_trigger_rebuilds(quiet):
+    n0 = len(quiet.calls())
+    follow(quiet)
+    out = quiet.repo / OUT_REL / "box"
+    # A run's options lock is a .toml and a stray .py are both source suffixes, but out/ is not source.
+    for rel in ("runs/r/assembly_options.lock.toml", "x.py"):
+        path = out / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x = 1\n")
+        path.write_text("x = 22\n")
+    time.sleep(DEBOUNCE + 1.5)
+    assert len(quiet.calls()) - n0 == 0
+    # The follow is alive: a real edit still builds, so the silence above was not vacuous.
+    edit_source(quiet.repo, 41)
+    time.sleep(DEBOUNCE + 2.0)
+    assert len(quiet.calls()) - n0 == 1
+
+
 # --------------------------------------------------------------------------- scene events
 
 
@@ -192,13 +216,13 @@ def test_preexisting_files_are_not_announced(tiny):
     time.sleep(1.5)
     announced = tiny.sse.artifacts()
     stale = [a for a in announced if a.get("model") == f"{PROJECT}/pre"
-             or a.get("runId") == f"{PROJECT}/oldrun" or a.get("liveId") == f"{PROJECT}/oldlive"]
+             or a.get("runId") == f"{RUNS_REL}/oldrun" or a.get("liveId") == f"{RUNS_REL}/oldlive"]
     assert stale == []
 
 
 def test_external_scene_write_is_announced_once(tiny):
     e0 = len(tiny.sse.events)
-    write_atomic(tiny.repo / "out" / PROJECT / "ext" / "scene" / "scene.json", '{"a": 1}')
+    write_atomic(tiny.repo / OUT_REL / "ext" / "scene" / "scene.json", '{"a": 1}')
     time.sleep(1.5)
     scenes = [a for a in tiny.sse.artifacts("scene", e0) if a["model"] == f"{PROJECT}/ext"]
     assert len(scenes) == 1
@@ -221,7 +245,7 @@ def test_service_build_announces_one_scene_event(quiet):
 
 def test_new_run_dir_is_announced_once_with_listed_run_id(tiny):
     e0 = len(tiny.sse.events)
-    run = tiny.repo / "out" / PROJECT / "newrun"
+    run = tiny.repo / RUNS_REL / "newrun"
     run.mkdir(parents=True)
     (run / "states.npz").write_bytes(b"x")
     write_atomic(run / "summary.json", '{"status": "PASS"}')
@@ -231,31 +255,46 @@ def test_new_run_dir_is_announced_once_with_listed_run_id(tiny):
     status, doc, _ = tiny.req("GET", "/v1/runs")
     assert status == 200
     assert runs[0]["runId"] in [r["runId"] for r in doc["runs"]]
-    assert runs[0]["runId"] == f"{PROJECT}/newrun"
+    assert runs[0]["runId"] == f"{RUNS_REL}/newrun"
+
+
+def test_nested_run_dir_is_announced_with_workspace_relative_run_id(tiny):
+    e0 = len(tiny.sse.events)
+    run = tiny.repo / RUNS_REL / "grp" / "nested"
+    run.mkdir(parents=True)
+    (run / "states.npz").write_bytes(b"x")
+    write_atomic(run / "summary.json", '{"status": "PASS"}')
+    time.sleep(1.5)
+    runs = [a for a in tiny.sse.artifacts("run", e0) if a["runId"].endswith("/nested")]
+    assert [a["runId"] for a in runs] == [f"{RUNS_REL}/grp/nested"]
+    status, doc, _ = tiny.req("GET", "/v1/runs")
+    listed = {r["runId"]: r for r in doc["runs"]}
+    assert listed[f"{RUNS_REL}/grp/nested"]["project"] == PROJECT
+    assert listed[f"{RUNS_REL}/grp/nested"]["model"] == MODEL
 
 
 def test_live_dir_events_partial_json_and_throttle(tiny):
-    live = tiny.repo / "out" / PROJECT / "lv1.live"
+    live = tiny.repo / RUNS_REL / "lv1.live"
     e0 = len(tiny.sse.events)
     write_atomic(live / "live.json", json.dumps({"frames": 3, "done": False}))
     time.sleep(1.0)
-    events = [a for a in tiny.sse.artifacts("live", e0) if a["liveId"] == f"{PROJECT}/lv1"]
+    events = [a for a in tiny.sse.artifacts("live", e0) if a["liveId"] == f"{RUNS_REL}/lv1"]
     assert len(events) == 1 and events[0]["frames"] == 3 and events[0]["done"] is False
 
     e1 = len(tiny.sse.events)
     (live / "live.json").write_text('{"frames": 4, "do')  # partial, non-atomic write
     time.sleep(1.0)
-    assert [a for a in tiny.sse.artifacts("live", e1) if a["liveId"] == f"{PROJECT}/lv1"] == []
+    assert [a for a in tiny.sse.artifacts("live", e1) if a["liveId"] == f"{RUNS_REL}/lv1"] == []
 
     e2 = len(tiny.sse.events)
     write_atomic(live / "live.json", json.dumps({"frames": 9, "done": True}))
     time.sleep(1.0)
-    events = [a for a in tiny.sse.artifacts("live", e2) if a["liveId"] == f"{PROJECT}/lv1"]
+    events = [a for a in tiny.sse.artifacts("live", e2) if a["liveId"] == f"{RUNS_REL}/lv1"]
     assert len(events) == 1 and events[0]["frames"] == 9 and events[0]["done"] is True
 
 
 def test_live_events_are_throttled(tiny):
-    live = tiny.repo / "out" / PROJECT / "lv2.live"
+    live = tiny.repo / RUNS_REL / "lv2.live"
     write_atomic(live / "live.json", json.dumps({"frames": 0, "done": False}))
     time.sleep(1.0)
     e0 = len(tiny.sse.events)
@@ -265,6 +304,6 @@ def test_live_events_are_throttled(tiny):
         time.sleep(0.02)
     burst = time.monotonic() - start
     time.sleep(1.5)
-    events = [a for a in tiny.sse.artifacts("live", e0) if a["liveId"] == f"{PROJECT}/lv2"]
+    events = [a for a in tiny.sse.artifacts("live", e0) if a["liveId"] == f"{RUNS_REL}/lv2"]
     assert 1 <= len(events) <= 5, (burst, [e["frames"] for e in events])
     assert events[-1]["frames"] == 50, "the final state must still be published after the burst"

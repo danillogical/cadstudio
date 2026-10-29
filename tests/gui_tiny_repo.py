@@ -2,6 +2,11 @@
 
 The service runs in a subprocess whose repo root is the copy, so its project discovery, its
 watcher and its build subprocesses all see only the tiny project that the test is free to edit.
+
+Engine signatures these tests assume (layout change: outputs live in ``<ws>/projects/<p>/out``,
+hidden state in ``<ws>/.cadstudio``):
+- ``server.GuiService(repo_root=ws, port=..., quiet=..., watch=..., ...)``: the workspace is
+  ``repo_root``; there is no ``out_root`` parameter or attribute any more.
 """
 from __future__ import annotations
 
@@ -118,7 +123,7 @@ from cadkit.gui import server
 
 if opts.pop("stub", False):
     server._build_command = lambda spec, sets: [sys.executable, os.environ["STUB_BUILD"], spec]
-svc = server.GuiService(repo_root=repo, out_root=repo / "out", port=0, quiet=True, **opts)
+svc = server.GuiService(repo_root=repo, port=0, quiet=True, **opts)
 svc.start()
 print(json.dumps({"port": svc.port, "token": svc.token}), flush=True)
 while True:

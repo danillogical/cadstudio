@@ -24,7 +24,7 @@ function parseCall(method: string, args: unknown[]): ValidCall {
   return parsed.message.call;
 }
 
-const RUN = { model: "pocky/syringe", scenario: "projects/pocky/scenarios/a.toml", acceptance: "projects/pocky/acc.toml" };
+const RUN = { model: "pocky/syringe", scenario: "projects/starter/scenarios/a.toml", acceptance: "projects/starter/acc.toml" };
 
 const VALID: Array<[string, unknown[]]> = [
   ["health", []],
@@ -38,7 +38,7 @@ const VALID: Array<[string, unknown[]]> = [
   ["getTrajectory", ["run_2024-01-01"]],
   ["getTrajectory", ["pocky/runs/run_1"]],
   ["startRun", [RUN]],
-  ["startRun", [{ ...RUN, options: "projects/pocky/opts.toml" }]],
+  ["startRun", [{ ...RUN, options: "projects/starter/opts.toml" }]],
   ["getJob", ["a1b2c3"]],
   ["cancelJob", ["a1b2c3"]],
   ["getArtifact", ["pocky/syringe/scene/scene.glb"]],

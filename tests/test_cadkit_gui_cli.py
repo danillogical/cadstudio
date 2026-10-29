@@ -35,7 +35,7 @@ def test_list_json():
     doc = json.loads(r.stdout)  # the whole stdout is one document
     assert doc["models"] == all_models()
     projects = {p["name"]: p for p in doc["projects"]}
-    assert {"armor", "pocky"} <= set(projects)
+    assert "starter" in projects
     for name, proj in discover().items():
         entry = projects[name]
         assert entry["models"] == list_models(proj)
@@ -44,17 +44,17 @@ def test_list_json():
 
 
 def test_build_json_check(tmp_path):
-    r = cad("build", "pocky/packet_dummy", "--check", "--json", "--out", str(tmp_path))
+    r = cad("build", "starter/box", "--check", "--json", "--out", str(tmp_path))
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["exit_code"] == r.returncode
-    assert doc["model"] == "pocky/packet_dummy"
+    assert doc["model"] == "starter/box"
     assert doc["outdir"] == str(tmp_path)
-    for name in ("dummy.step", "dummy.stl", "dummy.3mf", "assembly.step"):
+    for name in ("tray.step", "tray.stl", "tray.3mf", "assembly.step"):
         path = tmp_path / name
         assert path.exists(), name
         assert str(path) in doc["written"]
-    checks = doc["checks"]["dummy"]
+    checks = doc["checks"]["tray"]
     assert checks
     for check in checks:
         assert isinstance(check["name"], str) and check["name"]
@@ -69,17 +69,17 @@ def test_build_json_check(tmp_path):
 
 
 def test_build_json_failing_exit_unchanged(tmp_path):
-    # Large slide_clearance makes the demo cube's 30 mm gap insufficient -> exit 1.
-    r = cad("build", "armor/demo_cube", "--check", "--json",
-            "--set", "fit.slide_clearance=100", "--out", str(tmp_path))
+    # A huge min_wall makes the tray's walls too thin -> exit 1.
+    r = cad("build", "starter/box", "--check", "--json",
+            "--set", "structure.min_wall=100", "--out", str(tmp_path))
     assert r.returncode == 1, r.stdout + r.stderr
     doc = json.loads(r.stdout)
     assert doc["exit_code"] == 1
-    assert any(c["status"] == "fail" for c in doc["checks"]["cube"])
+    assert any(c["status"] == "fail" for c in doc["checks"]["tray"])
 
 
 def test_build_json_without_check(tmp_path):
-    r = cad("build", "armor/demo_cube", "--json", "--out", str(tmp_path))
+    r = cad("build", "starter/box", "--json", "--out", str(tmp_path))
     assert r.returncode == 0, r.stderr
     doc = json.loads(r.stdout)
     assert doc["checks"] is None and doc["report"] is None

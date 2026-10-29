@@ -348,9 +348,9 @@ describe("default deps against a real loopback service", () => {
   });
 
   function writeRecord(repoRoot: string) {
-    mkdirSync(join(dir, "out", ".gui"), { recursive: true });
+    mkdirSync(join(dir, ".cadstudio", "gui"), { recursive: true });
     writeFileSync(
-      join(dir, "out", ".gui", "service.json"),
+      join(dir, ".cadstudio", "gui", "service.json"),
       JSON.stringify({ pid: process.pid, port, token: TOKEN, repoRoot, protocolVersion: 1, startedAt: 1 }),
     );
   }

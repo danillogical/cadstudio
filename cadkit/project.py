@@ -1,6 +1,7 @@
 """Project record and discovery.
 
-A project is a package ``projects/<name>/`` whose ``__init__.py`` defines ``PROJECT``.
+A project is a package ``projects/<name>/`` of the workspace (``cadkit.workspace``) whose
+``__init__.py`` defines ``PROJECT``.
 Its models are the modules in ``PROJECT.models`` (a package) not starting with ``_``,
 each exposing ``build(p) -> dict[str, ModelPart]``.
 """
@@ -14,7 +15,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable
 
-import projects
+from .workspace import projects_package
 
 if TYPE_CHECKING:
     import trimesh
@@ -68,12 +69,14 @@ class Project:
 
 
 def discover() -> dict[str, Project]:
-    """All projects, keyed and sorted by name: packages under ``projects/`` that define ``PROJECT``."""
+    """All projects, keyed and sorted by name: packages under the workspace's ``projects/`` that
+    define ``PROJECT``. Raises ``WorkspaceError`` when there is no workspace."""
     found: dict[str, Project] = {}
-    for info in pkgutil.iter_modules(projects.__path__):
+    pkg = projects_package()
+    for info in pkgutil.iter_modules(pkg.__path__):
         if not info.ispkg:
             continue
-        proj = getattr(importlib.import_module(f"projects.{info.name}"), "PROJECT", None)
+        proj = getattr(importlib.import_module(f"{pkg.__name__}.{info.name}"), "PROJECT", None)
         if isinstance(proj, Project):
             found[proj.name] = proj
     return dict(sorted(found.items()))

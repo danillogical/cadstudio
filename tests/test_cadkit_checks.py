@@ -6,9 +6,9 @@ from build123d import Box, Compound, Location, Pos
 
 from cadkit.checks import run_checks
 from conftest import MINZ, box, by_name, part
-from projects.armor import PROJECT
+from projects.starter import PROJECT
 
-OUTSIDE_X = 168 + 30
+OUTSIDE_X = 198
 
 
 def far_box():
@@ -26,42 +26,42 @@ def test_statuses_valid(p):
 
 def test_bed_fit_too_long(p):
     shape = box(-185, 185, 0, 10, 0, 10)
-    assert run(shape, p, check_lid=False)["bed_fit"].status == "fail"
+    assert run(shape, p)["bed_fit"].status == "fail"
 
 
 def test_bed_fit_ok_350(p):
     shape = box(-175, 175, 0, 10, 0, 10)
-    assert run(shape, p, check_lid=False)["bed_fit"].status == "pass"
+    assert run(shape, p)["bed_fit"].status == "pass"
 
 
 def test_bed_fit_not_on_bed(p):
     shape = box(300, 320, 0, 10, 5, 15)
-    assert run(shape, p, check_lid=False)["bed_fit"].status == "fail"
+    assert run(shape, p)["bed_fit"].status == "fail"
 
 
 def test_bed_fit_print_location_fixes_pose(p):
     shape = box(300, 320, 0, 10, 5, 15)
-    r = run(shape, p, check_lid=False, print_location=Location((0, 0, -5)))
+    r = run(shape, p, print_location=Location((0, 0, -5)))
     assert r["bed_fit"].status == "pass"
 
 
 def test_min_wall_thin_plate_fails(p):
-    r = run(box(200, 260, 0, 60, 0, 1.6), p, check_lid=False)
+    r = run(box(200, 260, 0, 60, 0, 1.6), p)
     assert r["min_wall"].status == "fail"
 
 
 def test_min_wall_thick_plate_passes(p):
-    r = run(box(200, 260, 0, 60, 0, 3.0), p, check_lid=False)
+    r = run(box(200, 260, 0, 60, 0, 3.0), p)
     assert r["min_wall"].status == "pass"
 
 
 def test_two_solids_fail_valid_solid(p):
     shape = Compound([box(200, 220, 0, 20, 0, 20), box(250, 270, 0, 20, 0, 20)])
-    assert run(shape, p, check_lid=False)["valid_solid"].status == "fail"
+    assert run(shape, p)["valid_solid"].status == "fail"
 
 
 def test_mass_20mm_cube(p):
-    r = run(Box(20, 20, 20, align=MINZ), p, check_lid=False, check_screen=False)["mass"]
+    r = run(Box(20, 20, 20, align=MINZ), p)["mass"]
     assert r.status == "info"
     assert r.value == pytest.approx(8.0 * 1.27, rel=0.01)  # 10.16 g
     vol = float(re.search(r"([\d.]+) cm\^3", r.detail).group(1))
@@ -86,3 +86,15 @@ def test_overhang_t_shape_warns(p):
     r = run(shape, p)["overhangs"]
     assert r.status == "warn"
     assert r.value == pytest.approx(60 * 60 - 10 * 10, rel=0.10)
+
+
+def test_project_check_hook_runs_after_generic_checks(p):
+    """The starter hook adds `clearance` for a part with a mate, and only then."""
+    near = box(OUTSIDE_X + 20.1, OUTSIDE_X + 40, 100, 120, 0, 20)  # 0.1 mm from far_box, need 0.2
+    alone = run(far_box(), p)
+    assert "clearance" not in alone
+    mated = run(far_box(), p, mate=near)
+    assert mated["clearance"].status == "fail"
+    assert mated["clearance"].value == pytest.approx(0.1, abs=1e-3)
+    far = run(far_box(), p, mate=box(OUTSIDE_X + 21, OUTSIDE_X + 40, 100, 120, 0, 20))
+    assert far["clearance"].status == "pass"

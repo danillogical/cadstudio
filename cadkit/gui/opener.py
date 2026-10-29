@@ -2,11 +2,15 @@
 
 Flow: reuse a healthy registered service (the same rule as ``cad gui serve``) or spawn a detached
 ``cad gui serve --port 0 --no-browser --json`` that outlives this command (log in
-``out/.gui/service.log``). For VS Code, create a one-time open request (``POST /v1/open``), run
+``<workspace>/.cadstudio/gui/service.log``). For VS Code, create a one-time open request (``POST /v1/open``), run
 ``code --open-url vscode://danillogical.cadstudio/open?req=<id>`` and wait up to
 ``ACK_TIMEOUT_S`` for the extension's ack. ``--editor auto`` falls back to the browser when there is
 no ack; ``--editor vscode`` exits 3 instead. Success is claimed only after an ack or a browser
 launch that exited 0.
+
+A ``--run`` target is a run dir given as an absolute path, a path relative to the cwd, or a
+workspace-relative id; it must lie under ``projects/<project>/out/`` or ``.cadstudio/fixtures/``
+(the service's output roots) and is sent as its workspace-relative id.
 
 Exit codes: 0 opened (or ``--no-open``), 1 the service failed to start or answer, 2 bad
 arguments or an unknown model or run, 3 not opened (no ack, or the browser launch failed).
@@ -28,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
-from ..params import REPO_ROOT
+from ..workspace import OutputPathError, resolve_output, workspace_root
 from .server import MAX_BODY_BYTES, _pid_alive, discovery_path, existing_service, read_discovery
 
 EXTENSION_URI = "vscode://danillogical.cadstudio/open"
@@ -132,10 +136,14 @@ def model_target(spec: str) -> dict:
     return {"model": f"{project.name}/{model}"}
 
 
-def run_target(run_dir: str, *, out_root: Path, cwd: Path | None = None) -> dict:
-    """``{"run": <runId>}`` for a run dir under ``out/``, given as a path or an out-relative id."""
+def run_target(run_dir: str, *, ws: Path, cwd: Path | None = None) -> dict:
+    """``{"run": <runId>}`` for a run dir inside the workspace's output roots; else exit 2.
+
+    ``run_dir`` is an absolute path, a cwd-relative path or a workspace-relative id (tried in that
+    order); the id returned is the run's real path relative to the workspace.
+    """
     given = Path(run_dir)
-    root = Path(out_root).resolve()
+    root = Path(ws).resolve()
     candidates = [given] if given.is_absolute() else [Path(cwd or Path.cwd()) / given, root / given]
     path = next((c for c in candidates if c.exists() or c.is_symlink()), None)
     if path is None:
@@ -143,13 +151,22 @@ def run_target(run_dir: str, *, out_root: Path, cwd: Path | None = None) -> dict
     if path.is_symlink():
         raise OpenError(EXIT_USAGE, f"run directory {run_dir} is a symlink")
     resolved = path.resolve()
-    if not resolved.is_relative_to(root) or resolved == root:
-        raise OpenError(EXIT_USAGE, f"run directory {run_dir} is not under {root}")
+    outside = (f"run directory {run_dir} is not under {root}/projects/<project>/out or "
+               f"{root}/.cadstudio/fixtures")
+    if not resolved.is_relative_to(root):
+        raise OpenError(EXIT_USAGE, outside)
+    rel = resolved.relative_to(root).as_posix()
+    try:
+        contained, base = resolve_output(rel, root)
+    except OutputPathError:
+        raise OpenError(EXIT_USAGE, outside) from None
+    if contained != resolved or contained == root.joinpath(*base):
+        raise OpenError(EXIT_USAGE, outside)
     if not resolved.is_dir() or not (resolved / "summary.json").is_file() \
             or not (resolved / "states.npz").is_file():
         raise OpenError(EXIT_USAGE,
                         f"{run_dir} is not a run directory (needs summary.json and states.npz)")
-    return {"run": resolved.relative_to(root).as_posix()}
+    return {"run": rel}
 
 
 # -- service ---------------------------------------------------------------------------
@@ -205,13 +222,14 @@ class ServiceApi:
                          {"reason": reason})
 
 
-def service_log_path(out_root: Path) -> Path:
-    return discovery_path(out_root).parent / "service.log"
+def service_log_path(repo_root: Path) -> Path:
+    """The log of a service ``cad gui open`` started, ``<workspace>/.cadstudio/gui/service.log``."""
+    return discovery_path(repo_root).parent / "service.log"
 
 
-def spawn_service(repo_root: Path, out_root: Path) -> subprocess.Popen:
-    """Start ``cad gui serve`` detached (own session, no stdin), logging to ``out/.gui/service.log``."""
-    log = service_log_path(out_root)
+def spawn_service(repo_root: Path) -> subprocess.Popen:
+    """Start ``cad gui serve`` detached (own session, no stdin), logging to ``service_log_path``."""
+    log = service_log_path(repo_root)
     log.parent.mkdir(parents=True, exist_ok=True)
     try:
         log.parent.chmod(0o700)
@@ -237,41 +255,41 @@ def _log_tail(log: Path) -> str:
     return redact("\n".join(lines[-LOG_TAIL_LINES:]))
 
 
-def registered_alive(out_root: Path, repo_root: Path) -> bool:
+def registered_alive(repo_root: Path) -> bool:
     """Whether ``service.json`` names this repo and a live pid (it may just be slow to answer)."""
-    doc = read_discovery(out_root)
+    doc = read_discovery(repo_root)
     return bool(doc) and doc.get("repoRoot") == str(Path(repo_root).resolve()) \
         and _pid_alive(doc.get("pid"))
 
 
-def ensure_service(repo_root: Path, out_root: Path, *, timeout_s: float = START_TIMEOUT_S,
+def ensure_service(repo_root: Path, *, timeout_s: float = START_TIMEOUT_S,
                    find=existing_service, spawn=spawn_service, alive=registered_alive,
                    clock=time.monotonic, sleep=time.sleep) -> tuple[dict, bool]:
     """``(record, started)``: a healthy registered service, spawning and awaiting one if needed."""
-    found = find(out_root, repo_root)
+    found = find(repo_root)
     # One failed health check must not replace a live service, so retry before spawning.
-    retries = HEALTH_RETRIES if found is None and alive(out_root, repo_root) else 0
+    retries = HEALTH_RETRIES if found is None and alive(repo_root) else 0
     for _ in range(retries):
         sleep(HEALTH_RETRY_S)
-        found = find(out_root, repo_root)
+        found = find(repo_root)
         if found is not None:
             break
     if found is not None:
         return found, False
-    log = service_log_path(out_root)
+    log = service_log_path(repo_root)
     try:
-        proc = spawn(repo_root, out_root)
+        proc = spawn(repo_root)
     except OSError as exc:
         raise OpenError(EXIT_ERROR, f"could not start `cad gui serve`: {exc}") from None
     deadline = clock() + timeout_s
     while True:
-        found = find(out_root, repo_root)
+        found = find(repo_root)
         if found is not None:
             return found, True
         code = proc.poll()
         if code is not None:
             # A serve that found a service started meanwhile exits 0; look once more.
-            found = find(out_root, repo_root)
+            found = find(repo_root)
             if found is not None:
                 return found, False
             tail = _log_tail(log)
@@ -342,8 +360,7 @@ def wait_for_ack(status: Callable[[], dict], *, timeout_s: float = ACK_TIMEOUT_S
 class OpenDeps:
     """Everything ``open_gui`` touches outside its arguments; tests replace fields."""
 
-    repo_root: Path = REPO_ROOT
-    out_root: Path = field(default_factory=lambda: REPO_ROOT / "out")
+    repo_root: Path = field(default_factory=workspace_root)
     env: Mapping[str, str] = field(default_factory=lambda: os.environ)
     which: Callable[[str], str | None] = shutil.which
     run: Callable = subprocess.run
@@ -352,7 +369,7 @@ class OpenDeps:
     sleep: Callable[[float], None] = time.sleep
     ack_timeout_s: float = ACK_TIMEOUT_S
     ensure_service: Callable[["OpenDeps"], tuple[dict, bool]] = (
-        lambda deps: ensure_service(deps.repo_root, deps.out_root))
+        lambda deps: ensure_service(deps.repo_root))
     api: Callable[[Mapping], ServiceApi] = ServiceApi
     notify: Callable[[str], None] = lambda text: print(text, file=sys.stderr, flush=True)
 
@@ -408,11 +425,11 @@ def open_gui(target: Mapping | None, editor: str = "auto", *, no_open: bool = Fa
     except OpenError as exc:
         return OpenResult(exc.exit_code, {**doc, "error": exc.message, "exit_code": exc.exit_code})
     doc["service"] = {"pid": record.get("pid"), "port": record.get("port"), "started": started,
-                      "log": str(service_log_path(deps.out_root)) if started else None}
+                      "log": str(service_log_path(deps.repo_root)) if started else None}
     doc["url"] = gui_url(record, target)
     if started:
         deps.notify(f"cad gui open: started the GUI service (pid {record.get('pid')}); it keeps "
-                    f"running, log in {service_log_path(deps.out_root)}")
+                    f"running, log in {service_log_path(deps.repo_root)}")
     if no_open:
         return OpenResult(EXIT_OK, {**doc, "exit_code": EXIT_OK})
 
@@ -468,7 +485,7 @@ def run(*, model: str | None, run_dir: str | None, editor: str = "auto", no_open
         if editor not in EDITORS:
             raise OpenError(EXIT_USAGE, f"--editor must be one of {', '.join(EDITORS)}")
         target = (model_target(model) if model
-                  else run_target(run_dir, out_root=deps.out_root) if run_dir else None)
+                  else run_target(run_dir, ws=deps.repo_root) if run_dir else None)
     except OpenError as exc:
         print(f"cad gui open: {exc.message}", file=sys.stderr)
         if as_json:

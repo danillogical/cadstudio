@@ -23,15 +23,15 @@ def cad(*args, timeout=240):
 
 
 def test_project_physics_defaults_to_none():
-    """The dataclass defaults are None, and the armor project opts into neither hook."""
+    """The dataclass defaults are None, and the starter project opts into neither hook."""
     import dataclasses
 
     fields = {f.name: f for f in dataclasses.fields(Project)}
     assert fields["physics"].default is None
     assert fields["physics_with_options"].default is None
-    armor = discover()["armor"]
-    assert armor.physics is None
-    assert armor.physics_with_options is None
+    starter = discover()["starter"]
+    assert starter.physics is None
+    assert starter.physics_with_options is None
 
 
 def test_project_physics_field_takes_model_and_params():
@@ -43,14 +43,14 @@ def test_project_physics_field_takes_model_and_params():
         return None
 
     project = Project(name="x", params_path=Path("p"), load_params=lambda p: None,
-                      models=__import__("projects.armor.models", fromlist=["x"]),
+                      models=__import__("projects.starter.models", fromlist=["x"]),
                       physics=hook)
     assert project.physics("m1", object()) is None
     assert calls[0][0] == "m1"
 
 
 def test_export_unconfigured_project_is_error_not_success(tmp_path):
-    r = cad("physics", "export", "armor/demo_cube", "--out", str(tmp_path))
+    r = cad("physics", "export", "starter/box", "--out", str(tmp_path))
     assert r.returncode == 3, r.stdout + r.stderr
     assert '"status": "ERROR"' in r.stdout
     assert "no physics assembly" in r.stderr
@@ -139,7 +139,7 @@ def _blocked(name, *a, **k):
         raise ModuleNotFoundError("No module named 'mujoco'")
     return _real(name, *a, **k)
 builtins.__import__ = _blocked
-sys.argv = ["cad", "check", "armor/demo_cube", "--out", %r]
+sys.argv = ["cad", "check", "starter/box", "--out", %r]
 from cadkit.cli import main
 main()
 """ % (str(tmp_path),)

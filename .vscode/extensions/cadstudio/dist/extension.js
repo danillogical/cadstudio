@@ -500,7 +500,7 @@ var PROTOCOL_VERSION = 1;
 var START_TIMEOUT_MS = 18e4;
 var POLL_INTERVAL_MS = 500;
 function discoveryPath(workspaceRoot) {
-  return (0, import_node_path.join)(workspaceRoot, "out", ".gui", "service.json");
+  return (0, import_node_path.join)(workspaceRoot, ".cadstudio", "gui", "service.json");
 }
 function isPositiveInt(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;

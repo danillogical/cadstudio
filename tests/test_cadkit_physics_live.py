@@ -2,6 +2,10 @@
 
 The project is a stand-in whose physics hook returns the registered drop-box assembly,
 injected by patching the CLI's ``resolve`` (as ``test_cadkit_physics_cli_run.py`` does).
+
+Layout: runs live under ``<ws>/projects/<p>/out/<m>/runs/`` (possibly nested), and ``runId`` /
+``liveId`` are workspace-relative paths. The CLI finds the workspace from ``$CADSTUDIO_WORKSPACE``.
+Engine signature assumed: ``server.GuiService(repo_root=ws, port=, quiet=, watch=)``, no ``out_root``.
 """
 from __future__ import annotations
 
@@ -13,7 +17,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from pathlib import Path
 
 import numpy as np
@@ -119,19 +122,32 @@ def short_inputs(tmp_path_factory):
     return _inputs(tmp_path_factory.mktemp("live_short_inputs"), settle_s=0.5)
 
 
+RUNS_REL = f"projects/fakeproj/out/{MODEL}/runs"
+
+
 @pytest.fixture(scope="module")
-def under_out():
-    """A scratch dir under the repo's ``out/`` (gitignored) so ``runId`` can be derived."""
-    base = REPO_ROOT / "out" / f"_pytest_live_{uuid.uuid4().hex[:8]}"
-    base.mkdir(parents=True)
+def ws(tmp_path_factory):
+    """A temp workspace that the in-process CLI finds through ``$CADSTUDIO_WORKSPACE``."""
+    root = tmp_path_factory.mktemp("live_ws").resolve()
+    (root / "projects").mkdir()
+    mp = pytest.MonkeyPatch()
+    mp.setenv("CADSTUDIO_WORKSPACE", str(root))
     try:
-        yield base
+        yield root
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        mp.undo()
 
 
 @pytest.fixture(scope="module")
-def live_run(patched, inputs, under_out):
+def under_out(ws):
+    """A nested group dir under the model's ``runs/`` so ``runId`` can be derived."""
+    base = ws / RUNS_REL / "grp"
+    base.mkdir(parents=True)
+    return base
+
+
+@pytest.fixture(scope="module")
+def live_run(patched, inputs, ws, under_out):
     """One real run with live on, sampled from a background thread while it runs."""
     out = under_out / "live_on"
     live_dir = out.parent / f"{out.name}.live"
@@ -178,7 +194,7 @@ def test_run_dir_listing_identical_with_live_on_and_off(patched, short_inputs, t
     assert _listing(on) == _listing(off)
 
 
-def test_frames_grow_during_the_run_and_finish_done(live_run, under_out):
+def test_frames_grow_during_the_run_and_finish_done(live_run, ws):
     samples = live_run["samples"]
     doc = _live_doc(live_run["live"])
     assert doc["done"] is True and doc["status"] == "PASS" and doc["error"] is None
@@ -187,8 +203,8 @@ def test_frames_grow_during_the_run_and_finish_done(live_run, under_out):
     assert samples == sorted(samples), "frames must never decrease"
     mid = {s for s in samples if 0 < s < final}
     assert len(mid) >= 2, f"frames did not grow while running: {sorted(set(samples))[:20]}"
-    expected = live_run["out"].resolve().relative_to((REPO_ROOT / "out").resolve()).as_posix()
-    assert doc["runId"] == expected
+    assert doc["runId"] == f"{RUNS_REL}/grp/live_on"
+    assert doc["runId"] == live_run["out"].resolve().relative_to(ws).as_posix()
 
 
 def test_poses_bin_layout_and_size(live_run):
@@ -281,14 +297,17 @@ def _http(svc, path, headers=None, token=True):
         conn.close()
 
 
+DEMO_RUN = "projects/demo/out/box/runs/run1"  # workspace-relative run dir of the service tests
+
+
 @pytest.fixture(scope="module")
 def svc(live_run, tmp_path_factory):
-    out_root = tmp_path_factory.mktemp("live_svc_out")
-    run = out_root / "demo" / "run1"
+    svc_ws = tmp_path_factory.mktemp("live_svc_ws").resolve()
+    run = svc_ws / DEMO_RUN
     run.parent.mkdir(parents=True)
     shutil.copytree(live_run["out"], run)
     shutil.copytree(live_run["live"], run.parent / "run1.live")
-    service = server.GuiService(out_root=out_root, port=0, quiet=True, watch=False)
+    service = server.GuiService(repo_root=svc_ws, port=0, quiet=True, watch=False)
     service.start()
     try:
         yield service
@@ -299,22 +318,31 @@ def svc(live_run, tmp_path_factory):
 def test_get_live_lists_the_sidecar(svc):
     status, payload, _ = _http(svc, "/v1/live")
     assert status == 200
-    ids = [entry["liveId"] for entry in json.loads(payload)["lives"]]
-    assert "demo/run1" in ids
+    lives = json.loads(payload)["lives"]
+    assert DEMO_RUN in [entry["liveId"] for entry in lives]
+    entry = next(e for e in lives if e["liveId"] == DEMO_RUN)
+    assert entry["project"] == "demo" and entry["model"] == "demo/box"
     assert _http(svc, "/v1/live", token=False)[0] == 401
 
 
 def test_get_live_id_returns_live_json(svc):
-    status, payload, _ = _http(svc, "/v1/live/demo/run1")
+    status, payload, _ = _http(svc, f"/v1/live/{DEMO_RUN}")
     assert status == 200
-    disk = json.loads((svc.out_root / "demo" / "run1.live" / "live.json").read_text("utf-8"))
+    disk = json.loads((svc.repo_root / f"{DEMO_RUN}.live" / "live.json").read_text("utf-8"))
     assert json.loads(payload) == disk
-    assert _http(svc, "/v1/live/demo/nope")[0] == 404
+    assert _http(svc, "/v1/live/projects/demo/out/box/runs/nope")[0] == 404
+
+
+def test_get_runs_entry_has_workspace_relative_id_project_and_model(svc):
+    status, payload, _ = _http(svc, "/v1/runs")
+    assert status == 200
+    entry = next(e for e in json.loads(payload)["runs"] if e["runId"] == DEMO_RUN)
+    assert entry["project"] == "demo" and entry["model"] == "demo/box"
 
 
 def test_range_requests_on_poses_bin(svc):
-    path = "/v1/artifacts/demo/run1.live/poses.bin"
-    data = (svc.out_root / "demo" / "run1.live" / "poses.bin").read_bytes()
+    path = f"/v1/artifacts/{DEMO_RUN}.live/poses.bin"
+    data = (svc.repo_root / f"{DEMO_RUN}.live" / "poses.bin").read_bytes()
     size, start = len(data), len(data) - 56
     status, body, headers = _http(svc, path, {"Range": f"bytes={start}-"})
     assert status == 206
@@ -329,10 +357,10 @@ def test_range_requests_on_poses_bin(svc):
 @pytest.mark.parametrize("path", [
     "/v1/live/..%2F..%2Fetc",
     "/v1/live/%2e%2e/%2e%2e/etc",
-    "/v1/live/demo/%2e%2e/%2e%2e/x",
+    "/v1/live/projects/demo/%2e%2e/%2e%2e/x",
     "/v1/live//etc/passwd",
     "/v1/artifacts/%2e%2e/%2e%2e/etc/passwd",
-    "/v1/artifacts/demo/run1.live/%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+    "/v1/artifacts/projects/demo/out/box/runs/run1.live/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd",
 ])
 def test_path_traversal_is_refused(svc, path):
     status, body, _ = _http(svc, path)

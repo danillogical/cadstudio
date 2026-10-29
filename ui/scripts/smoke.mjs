@@ -2,16 +2,17 @@
 // End-to-end smoke: start `cad gui serve`, then fetch health, a scene and a trajectory through
 // the real BrowserTransport in Node. Exits 0 on success and stops only the service it started.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const UI_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = path.resolve(UI_DIR, "..");
-const OUT_ROOT = path.join(REPO_ROOT, "out");
+const RUNS_ROOT = path.join(REPO_ROOT, "projects", "starter", "out", "box", "runs");
 const UV_RUN = ["run", "--frozen", "--extra", "physics"];
-const SCENE_MODEL = "pocky/packet_dummy";
+const SCENE_MODEL = "starter/box";
 const START_TIMEOUT_MS = 180_000;
 const JOB_TIMEOUT_MS = 600_000;
 const STOP_TIMEOUT_MS = 10_000;
@@ -44,22 +45,26 @@ function check(condition, message) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Write the fixture into a fresh dir under out/gui-smoke/ and run it through `cad physics scenario`. */
+/**
+ * Write the fixture into a scratch dir and run it through `cad physics scenario` into
+ * projects/starter/out/box/runs/gui-smoke-<n>, so the service lists it with a workspace-relative id.
+ */
 function makeRun() {
-  const base = path.join(OUT_ROOT, "gui-smoke");
-  mkdirSync(base, { recursive: true });
-  const dir = mkdtempSync(path.join(base, "run-"));
-  const scenario = path.join(dir, "scenario.json");
-  const acceptance = path.join(dir, "acceptance.json");
+  const scratch = mkdtempSync(path.join(os.tmpdir(), "cadstudio-smoke-"));
+  const scenario = path.join(scratch, "scenario.json");
+  const acceptance = path.join(scratch, "acceptance.json");
   writeFileSync(scenario, JSON.stringify(SCENARIO));
   writeFileSync(acceptance, JSON.stringify(ACCEPTANCE));
-  const runDir = path.join(dir, "run");
+  mkdirSync(RUNS_ROOT, { recursive: true });
+  const runDir = path.join(RUNS_ROOT, `gui-smoke-${process.pid}-${Date.now()}`);
   const result = spawnSync("uv", [...UV_RUN, "cad", "physics", "scenario", scenario,
     "--acceptance", acceptance, "--out", runDir], { cwd: REPO_ROOT, encoding: "utf8" });
   if (result.status !== 0) {
+    rmSync(scratch, { recursive: true, force: true });
+    rmSync(runDir, { recursive: true, force: true });
     throw new Error(`cad physics scenario exited ${result.status}: ${result.stderr || result.stdout}`);
   }
-  return { dir, runId: path.relative(OUT_ROOT, runDir).split(path.sep).join("/") };
+  return { scratch, runDir, runId: path.relative(REPO_ROOT, runDir).split(path.sep).join("/") };
 }
 
 /** Start the service; resolves with its `--json` record and the child process. */
@@ -134,11 +139,10 @@ function isGlb(bytes) {
 async function main() {
   let vite = null;
   let started = null;
-  let runDir = null;
+  let run = null;
   try {
     log("generating a small drop run");
-    const run = makeRun();
-    runDir = run.dir;
+    run = makeRun();
 
     log("starting cad gui serve");
     const { record, child } = await startService();
@@ -170,7 +174,7 @@ async function main() {
     check(health.repoRoot === realpathSync(REPO_ROOT), `service is for another repo: ${health.repoRoot}`);
     log(`health ok (pid ${health.pid})`);
 
-    const inputs = await transport.listPhysicsInputs("pocky/syringe");
+    const inputs = await transport.listPhysicsInputs(SCENE_MODEL);
     check(inputs.scenarios.length > 0 && inputs.acceptance.length > 0, "no physics inputs listed");
     log(`physics inputs ok (${inputs.scenarios.length} scenarios, ${inputs.acceptance.length} acceptance, ${inputs.options.length} options)`);
 
@@ -209,13 +213,9 @@ async function main() {
   } finally {
     if (vite) await vite.close();
     if (started) await stopService(started);
-    if (runDir) {
-      rmSync(runDir, { recursive: true, force: true });
-      try {
-        rmdirSync(path.dirname(runDir));
-      } catch {
-        // Another smoke run still has a directory there.
-      }
+    if (run) {
+      rmSync(run.runDir, { recursive: true, force: true });
+      rmSync(run.scratch, { recursive: true, force: true });
     }
   }
 }
