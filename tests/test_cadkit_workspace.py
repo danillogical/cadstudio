@@ -1,4 +1,4 @@
-"""Workspace rule: the engine finds ``projects/`` and ``out/`` from the cwd, not from its own repo.
+"""Workspace rule: the engine finds ``projects/`` (and each project's ``out/``) from the cwd, not from its own repo.
 
 The workspace is the nearest ancestor of the cwd (itself included) holding a ``projects/``
 directory; ``CADSTUDIO_WORKSPACE`` overrides the search. Every test runs the real engine at the
@@ -69,11 +69,12 @@ def test_list_from_subdirectory_finds_ancestor_workspace(ws):
     assert listed(run_cad(sub, "list", "--json")) == ["tiny/box"]
 
 
-def test_build_writes_to_workspace_out(ws):
+def test_build_writes_to_project_out(ws):
     proc = run_cad(ws, "build", "tiny/box")
     assert proc.returncode == 0, proc.stderr
-    assert (ws / "out" / "tiny" / "box" / "box.step").exists() or any(
-        (ws / "out" / "tiny" / "box").glob("*.step"))
+    box_out = ws / "projects" / "tiny" / "out" / "box"
+    assert (box_out / "box.step").exists() or any(box_out.glob("*.step"))
+    assert not (ws / "out").exists()
     assert not (ENGINE / "out" / "tiny").exists()
 
 
@@ -93,10 +94,10 @@ def test_no_workspace_is_an_error(tmp_path):
     assert "CADSTUDIO_WORKSPACE" in proc.stderr
 
 
-def test_doctor_reports_workspace_out_and_engine_ui(ws):
+def test_doctor_reports_hidden_state_dir_and_engine_ui(ws):
     proc = run_cad(ws, "doctor", "--json")
     checks = json.loads(proc.stdout)["checks"]
-    assert Path(checks["output_dir"]["path"]).resolve() == ws / "out"
+    assert Path(checks["output_dir"]["path"]).resolve() == ws / ".cadstudio"
     if (ENGINE / "ui" / "dist").is_dir():
         assert checks["ui_dist"]["present"] is True
         assert Path(checks["ui_dist"]["path"]).resolve() == (ENGINE / "ui" / "dist").resolve()
@@ -142,7 +143,7 @@ def test_gui_service_is_rooted_at_workspace(tmp_path):
         (phys / rel).write_text("{}" if rel.endswith(".json") else "")
     svc = Served(ws)
     try:
-        record = json.loads((ws / "out" / ".gui" / "service.json").read_text())
+        record = json.loads((ws / ".cadstudio" / "gui" / "service.json").read_text())
         assert Path(record["repoRoot"]).resolve() == ws
         status, health = svc.get("/v1/health")
         assert status == 200

@@ -11,7 +11,7 @@ The extension hosts the same `ui/` bundle the browser uses, in a webview panel:
 - **Assets.** The build copies `ui/dist` into `media/`. The panel loads it through webview URIs
   under a strict CSP: `default-src 'none'`, scripts and the stylesheet only with a per-load nonce,
   `connect-src 'none'`.
-- **Service.** The extension host reads `out/.gui/service.json`. It uses the service only if
+- **Service.** The extension host reads `.cadstudio/gui/service.json`. It uses the service only if
   `/v1/health` answers for the same pid and this workspace folder as repo root. Otherwise it runs
   `uv run --frozen --extra physics cad gui serve --no-browser --json` in a "GUI service" task and
   waits up to 180 s for it to register. Closing the panel or the window leaves the service running.

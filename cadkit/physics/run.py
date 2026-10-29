@@ -222,9 +222,9 @@ def _now_utc() -> str:
 
 
 def default_outdir(run_id: str) -> Path:
-    from ..workspace import workspace_root
+    from ..workspace import fixtures_root
 
-    return workspace_root() / "out" / "fixtures" / "gravity_drop" / "physics" / run_id
+    return fixtures_root() / "gravity_drop" / "physics" / run_id
 
 
 def run_smoke(out: Path | None = None, spec: DropSpec | None = None) -> RunResult:

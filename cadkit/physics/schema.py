@@ -401,6 +401,62 @@ class ActuatorSpec:
             raise ValueError(f"actuator {self.actuator_id!r} gear must be finite and nonzero")
 
 
+#: Coupling constraint impedance, emitted as the equality's ``solimp``. Matches the module's
+#: historic contact default; ``width`` is in the follower's own units (rad or m).
+COUPLING_SOLIMP = (0.95, 0.99, 0.001)
+
+
+@dataclass(frozen=True)
+class JointCouplingSpec:
+    """A gear train between two joints: ``q_follower = ratio * q_driver``.
+
+    ``driver`` and ``follower`` are ``JointSpec.joint_id`` values. Either may be a hinge or a
+    slide, and they may be mixed. ``ratio`` is in **follower units per driver unit**, each
+    joint's own SI unit: rad/rad for gear to gear (negative for an external mesh, which
+    reverses direction), m/rad for a pinion driving a rack (the pinion's pitch radius in
+    metres), rad/m for a rack driving a pinion (1 / radius), m/m for slide to slide. Both
+    coordinates are measured from the joints' zero, so the relation holds with no offset.
+
+    Emitted as an MJCF ``<equality><joint joint1=follower joint2=driver
+    polycoef="0 ratio 0 0 0"/>``. The constraint carries no backlash, friction or loss: the
+    follower is driven only through the constraint force, and power is conserved.
+
+    ``timeconst_s`` / ``dampratio`` are the **compliance of the coupling**, emitted as the
+    equality's ``solref``. They are absolute SI seconds and a dimensionless damping ratio, not
+    timestep multiples, so refining ``dt`` changes integration resolution only and never the
+    gear train's stiffness. The default 2 ms equals ``AssemblySpec.contact_timeconst_s``: a
+    printed gear mesh is a PETG contact, and any timestep the contact default accepts also
+    resolves the coupling. MuJoCo's own equality default (0.02 s) is ten times softer, and
+    under a load the steady tracking error grows with the square of the time constant. The
+    assembly rejects a value below MuJoCo's refsafe floor of two timesteps, which would be
+    silently softened.
+    """
+
+    name: str
+    driver: str
+    follower: str
+    ratio: float
+    timeconst_s: float = 2.0e-3
+    dampratio: float = 1.0
+    source: Source = Source("assumed", "declared ideal gear train")
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        _validate_id(self.name, "coupling name")
+        _validate_id(self.driver, f"coupling {self.name!r} driver")
+        _validate_id(self.follower, f"coupling {self.name!r} follower")
+        if self.driver == self.follower:
+            raise ValueError(f"coupling {self.name!r} couples joint {self.driver!r} to itself")
+        if (not isinstance(self.ratio, (int, float)) or isinstance(self.ratio, bool)
+                or not math.isfinite(self.ratio) or self.ratio == 0.0):
+            raise ValueError(f"coupling {self.name!r} ratio must be finite and nonzero, "
+                             f"got {self.ratio!r}")
+        _validate_solref((self.timeconst_s, self.dampratio),
+                         f"coupling {self.name!r} (timeconst_s, dampratio)")
+
+
 @dataclass(frozen=True)
 class BodySpec:
     """A rigid body: one or more parts welded together, at one pose in assembly coordinates."""
@@ -488,6 +544,8 @@ class AssemblySpec:
     #: Ratio of frictional to normal constraint impedance; ``None`` keeps MuJoCo's default.
     impratio: float | None = None
     actuators: tuple[ActuatorSpec, ...] = ()
+    #: Gear trains between joints, emitted as joint equality constraints.
+    couplings: tuple[JointCouplingSpec, ...] = ()
     source: Source = Source("derived", "declared assembly")
 
     def validate(self) -> None:
@@ -593,6 +651,43 @@ class AssemblySpec:
                 raise ValueError(
                     f"actuator {actuator.actuator_id!r} is {actuator.kind!r} but drives a "
                     f"{joint.kind!r} joint, which needs {expected!r}")
+        self._validate_couplings(joints)
+
+    def _validate_couplings(self, joints: dict[str, JointSpec]) -> None:
+        """Known joints, unique names, one driver per follower, and no driver cycle."""
+        names: set[str] = set()
+        driver_of: dict[str, str] = {}
+        for coupling in self.couplings:
+            coupling.validate()
+            if coupling.name in names:
+                raise ValueError(f"duplicate coupling {coupling.name!r}")
+            names.add(coupling.name)
+            for role, joint_id in (("driver", coupling.driver),
+                                   ("follower", coupling.follower)):
+                if joint_id not in joints:
+                    raise ValueError(f"coupling {coupling.name!r} {role} references unknown "
+                                     f"joint {joint_id!r}")
+            if coupling.follower in driver_of:
+                # Two equalities on one follower over-constrain it unless the ratios agree.
+                raise ValueError(
+                    f"joint {coupling.follower!r} is the follower of more than one coupling "
+                    f"(driven by {driver_of[coupling.follower]!r} and {coupling.driver!r})")
+            driver_of[coupling.follower] = coupling.driver
+            if coupling.timeconst_s < 2.0 * self.timestep_s:
+                raise ValueError(
+                    f"coupling {coupling.name!r} timeconst_s ({coupling.timeconst_s!r}) must "
+                    f"clear the refsafe floor 2*dt ({2.0 * self.timestep_s!r}); MuJoCo would "
+                    f"silently soften it")
+        # Each follower has at most one driver, so following drivers from any joint either
+        # ends or revisits a joint; a revisit is a train that drives itself and locks.
+        for start in driver_of:
+            seen = {start}
+            cursor = driver_of[start]
+            while cursor in driver_of:
+                if cursor in seen:
+                    raise ValueError(f"couplings form a cycle through joint {cursor!r}")
+                seen.add(cursor)
+                cursor = driver_of[cursor]
 
     def _validate_topology(self) -> None:
         """Parent references must exist, be unique, and form a forest (no cycles)."""

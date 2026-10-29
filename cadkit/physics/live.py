@@ -16,8 +16,10 @@ Contents (written in this order):
 
 ``live.json`` keys:
 
-- ``schemaVersion`` (1), ``units`` (``"mm"``), ``liveId`` (null when the dir is not under
-  ``out/``; otherwise the dir's path relative to ``out/`` without ``.live``).
+- ``schemaVersion`` (1), ``units`` (``"mm"``), ``liveId``: the ``.live`` dir's path relative to
+  the workspace without ``.live`` (so e.g. ``projects/<p>/out/<m>/runs/<run>``), or null when the
+  run dir is not inside an output root (``projects/<p>/out/`` or ``.cadstudio/fixtures/``, see
+  ``cadkit/workspace.py``), since the GUI service could not serve it.
 - ``fps``, ``t0``: frame ``k`` is the accepted state nearest sim time ``t0 + k / fps`` (ties
   to the earlier state), the rule ``Playback.row_at`` uses, and frames run up to the last
   state exactly as ``frame_times`` counts them. So a finished live ``poses.bin`` equals the
@@ -40,8 +42,8 @@ Contents (written in this order):
 - ``done``: true once no more frames will be written. ``status``: null while running; on
   completion the run summary's status (``"PASS"``, ``"FAIL"``, ``"INCONCLUSIVE"``), or
   ``"error"`` when the run errored (summary ``ERROR`` or an exception). ``runId``: on
-  completion, the run's id as ``GET /v1/runs`` spells it (path relative to ``out/``) when the
-  run dir holds ``summary.json`` and ``states.npz`` and lies under ``out/``; else null.
+  completion, the run's id as ``GET /v1/runs`` spells it (workspace-relative path) when the
+  run dir holds ``summary.json`` and ``states.npz`` and lies in an output root; else null.
 - ``error``: null, or why the live writer stopped early (``done`` is then true and ``status``
   null: the run itself carries on unaffected).
 
@@ -77,11 +79,15 @@ def live_dir_for(run_dir) -> Path:
     return run_dir.parent / f"{run_dir.name}.live"
 
 
-def _out_relative(path: Path, out_root: Path) -> str | None:
+def _workspace_id(path: Path, root: Path) -> str | None:
+    """``path``'s workspace-relative POSIX id when it lies in an output root, else None."""
+    from ..workspace import output_root_parts
+
     try:
-        return path.resolve().relative_to(Path(out_root).resolve()).as_posix()
+        rel = path.resolve().relative_to(Path(root).resolve())
     except (OSError, ValueError):
         return None
+    return rel.as_posix() if output_root_parts(rel.parts) is not None else None
 
 
 class LiveWriter:
@@ -93,17 +99,17 @@ class LiveWriter:
     """
 
     def __init__(self, *, fps: float = DEFAULT_FPS, flush_s: float = DEFAULT_FLUSH_S,
-                 out_root=None, clock=time.monotonic, stream=None) -> None:
+                 root=None, clock=time.monotonic, stream=None) -> None:
         fps = float(fps)
         if not math.isfinite(fps) or not 0.0 < fps <= MAX_FPS:
             raise ValueError(f"live fps must be a finite number in (0, {MAX_FPS:g}], got {fps!r}")
-        if out_root is None:
+        if root is None:
             from ..workspace import workspace_root
 
-            out_root = workspace_root() / "out"
+            root = workspace_root()
         self.fps = fps
         self.flush_s = float(flush_s)
-        self.out_root = Path(out_root)
+        self.root = Path(root)
         self._clock = clock
         self._stream = stream
         self.run_dir: Path | None = None
@@ -143,7 +149,7 @@ class LiveWriter:
         try:
             self.run_dir = Path(run_dir)
             self.dir = live_dir_for(self.run_dir)
-            self.live_id = _out_relative(self.run_dir, self.out_root)
+            self.live_id = _workspace_id(self.run_dir, self.root)
             if self.dir.is_symlink() or self.dir.is_file():
                 self.dir.unlink()
             elif self.dir.exists():
@@ -275,7 +281,7 @@ class LiveWriter:
             path = run_dir / name
             if path.is_symlink() or not path.is_file():
                 return None
-        return _out_relative(run_dir, self.out_root)
+        return _workspace_id(run_dir, self.root)
 
     def _flush(self, *, force: bool = False) -> None:
         if not (self._pending or self._dirty or force):

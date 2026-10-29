@@ -29,7 +29,7 @@ uv run cad list
 uv run cad build starter/hinge --check --render --views standard
 ```
 
-`cad list` prints every model as `<project>/<model>`. The build writes to `out/starter/hinge/`:
+`cad list` prints every model as `<project>/<model>`. The build writes to `projects/starter/out/hinge/`:
 
 - `report.md` and `report.json`: the check table (valid solid, watertight, bed fit, minimum wall, clearance, overhangs, mass).
 - `renders/*.png`: `iso`, `front`, `back`, `top`, and a print-pose image per part.
@@ -80,7 +80,7 @@ Two ways to keep your projects:
   ./setup.sh --workspace ../my-projects
   ```
 
-  This runs `uv sync` in your repo and links the engine's agent skills into it. Run `cad` from inside your repo: the nearest ancestor directory containing `projects/` is the workspace (or set `CADSTUDIO_WORKSPACE`), and outputs go to `<workspace>/out`.
+  This runs `uv sync` in your repo and links the engine's agent skills into it. Run `cad` from inside your repo: the nearest ancestor directory containing `projects/` is the workspace (or set `CADSTUDIO_WORKSPACE`), and outputs go to `<workspace>/projects/<project>/out/`.
 
 ## Live monitoring
 
@@ -90,9 +90,9 @@ Open the panel once, then keep working in the terminal:
 uv run --frozen --extra physics cad gui open starter/hinge
 ```
 
-Keep **Follow** on in the panel (it is on by default). While it is on, edits to the shown model's sources under `projects/<project>/` rebuild that model in the service, and the panel picks up the new scene. A `cad physics run` appears as a live run: its poses stream into the panel while it steps, and when it finishes the panel swaps to the final trajectory and loops it.
+Keep **Follow** on in the panel (it is on by default). While it is on, edits to the shown model's sources under `projects/<project>/` rebuild that model in the service, and the panel picks up the new scene. A `cad physics run` appears as a live run: its poses stream into the panel while it steps, and when it finishes the panel swaps to the final trajectory and loops it. The panel has separate Project and Model selectors; the runs list shows the selected model's runs.
 
-Scene writes and new runs under `out/` are shown whatever started them, so an agent's builds and sims show up in the panel too. Pass `--no-live` to `cad physics run` to skip the live stream; the finished run is still written. If the panel closes, the service drops the follow 60 s after its last renewal.
+Scene writes and new runs under `projects/<project>/out/` are shown whatever started them, so an agent's builds and sims show up in the panel too. Pass `--no-live` to `cad physics run` to skip the live stream; the finished run is still written. If the panel closes, the service drops the follow 60 s after its last renewal.
 
 ## Physics (optional)
 
@@ -119,7 +119,7 @@ Agents should read `report.md` and at least one render before claiming a geometr
 
 - **Start with `uv run cad doctor`.** It reports Python, uv, build123d, MuJoCo, node/npm, the output directory and the UI and extension builds.
 - **`code` command missing.** In VS Code, run `Shell Command: Install 'code' command in PATH` from the Command Palette, then re-run `./setup.sh`.
-- **Local health checks lie inside a sandbox.** Some agent sandboxes route loopback HTTP through a proxy that answers `200` for a dead server. Check that the GUI service is up with `lsof -nP -iTCP:<port> -sTCP:LISTEN` (the port is in `out/.gui/service.json`) rather than trusting an HTTP status.
+- **Local health checks lie inside a sandbox.** Some agent sandboxes route loopback HTTP through a proxy that answers `200` for a dead server. Check that the GUI service is up with `lsof -nP -iTCP:<port> -sTCP:LISTEN` (the port is in `.cadstudio/gui/service.json`) rather than trusting an HTTP status.
 - **MuJoCo will not install.** The wheel is arm64 macOS only. On Intel Macs or other platforms, skip physics; CAD commands still work.
 - **Node too old.** The UI and extension need node 22 or newer: `brew upgrade node`.
 - **`prusa-slicer` not found.** Projects that slice from the command line need it on `PATH`; `./setup.sh` offers to install PrusaSlicer and link it into `~/.local/bin`.
@@ -129,6 +129,8 @@ Agents should read `report.md` and at least one render before claiming a geometr
 ```
 cadkit/            the engine: params, export, render, checks, physics, CLI, GUI service
 projects/starter/  the bundled example project (starter/box, starter/hinge)
+projects/*/out/    model outputs and physics runs (gitignored)
+.cadstudio/        GUI service record and log, engine fixture runs (gitignored)
 ui/                the Three.js viewer
 editor/vscode/     the VS Code extension that hosts the viewer
 tests/             pytest suite (about 3.5 minutes): uv run pytest tests -q

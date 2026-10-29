@@ -1,6 +1,6 @@
 /**
  * Finding (and if need be starting) the workspace's GUI service. The service registers itself in
- * `<workspace>/out/.gui/service.json`; a record is used only when it parses, names this workspace
+ * `<workspace>/.cadstudio/gui/service.json`; a record is used only when it parses, names this workspace
  * as its repo root, and the process on its port answers `/v1/health` as that same service.
  * All I/O is injected through `ServiceDeps`, so the logic here is testable without a service.
  */
@@ -21,7 +21,7 @@ export interface ServiceRecord {
 }
 
 export function discoveryPath(workspaceRoot: string): string {
-  return join(workspaceRoot, "out", ".gui", "service.json");
+  return join(workspaceRoot, ".cadstudio", "gui", "service.json");
 }
 
 function isPositiveInt(value: unknown): value is number {

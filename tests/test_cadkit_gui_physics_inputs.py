@@ -24,8 +24,7 @@ def ws(tmp_path_factory):
 @pytest.fixture(scope="module")
 def svc(ws, tmp_path_factory):
     with workspace_env(ws):
-        service = server.GuiService(repo_root=ws, out_root=tmp_path_factory.mktemp("gui_inputs_out"),
-                                    port=0, quiet=True)
+        service = server.GuiService(repo_root=ws, port=0, quiet=True)
         service.start()
         try:
             yield service

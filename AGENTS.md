@@ -17,24 +17,24 @@ Platform: macOS on Apple silicon (arm64) only.
 
 ## Workspace
 
-The workspace is the nearest ancestor of the current directory that contains a `projects/` directory, or `$CADSTUDIO_WORKSPACE` when set. Projects are loaded from `<workspace>/projects/`, and every default output goes to `<workspace>/out`. The engine checkout is itself a workspace (it holds `projects/starter`). A project collection can live in its own repo as a workspace with a `projects/` directory and a path dependency on cadstudio; run `uv run cad ...` from inside it. Source: `cadkit/workspace.py`.
+The workspace is the nearest ancestor of the current directory that contains a `projects/` directory, or `$CADSTUDIO_WORKSPACE` when set. Projects are loaded from `<workspace>/projects/`, and default outputs go under `<workspace>/projects/<project>/out/` (model outputs and physics runs), while GUI state goes to `<workspace>/.cadstudio/`. The engine checkout is itself a workspace (it holds `projects/starter`). A project collection can live in its own repo as a workspace with a `projects/` directory and a path dependency on cadstudio; run `uv run cad ...` from inside it. Source: `cadkit/workspace.py`.
 
 ## Commands
 
 - `uv run cad list [--json]` lists models as `<project>/<model>` (every `projects/<project>/models/*.py` not starting with `_`), e.g. `starter/box`.
-- `uv run cad build <model> [--part NAME] [--render] [--check] [--scene] [--views standard|detail|sections|all] [--set KEY=VAL ...] [--params PATH] [--out DIR] [--json]` exports STEP, STL and 3MF, then optionally renders and checks. `--scene` also writes `out/<project>/<model>/scene/`, and is skipped if a check FAILs.
+- `uv run cad build <model> [--part NAME] [--render] [--check] [--scene] [--views standard|detail|sections|all] [--set KEY=VAL ...] [--params PATH] [--out DIR] [--json]` exports STEP, STL and 3MF, then optionally renders and checks. `--scene` also writes `projects/<project>/out/<model>/scene/`, and is skipped if a check FAILs.
 - `uv run cad render <model> [--views ...]` renders only.
 - `uv run cad check <model> [--set ...]` runs checks only. Exit code is 1 if any check FAILs.
-- `uv run cad gui scene <model> [--set ...] [--params P] [--out DIR] [--json]` writes `out/<project>/<model>/scene/` (`scene.json` and `parts/<id>.glb` in assembly coordinates, in mm).
+- `uv run cad gui scene <model> [--set ...] [--params P] [--out DIR] [--json]` writes `projects/<project>/out/<model>/scene/` (`scene.json` and `parts/<id>.glb` in assembly coordinates, in mm).
 - `uv run cad gui open [<model> | --run RUN_DIR] [--editor auto|vscode|browser] [--no-open] [--json]` shows a model or run in the CADStudio panel (see "Live monitoring").
 - `uv run --frozen --extra physics cad gui trajectory RUN_DIR [--fps N] [--contacts] [--json]` writes `<run-name>.gui/` next to the run (`trajectory.json`, `poses.bin`, `meshes/*.glb`, optional `contacts.bin`, in mm). It never writes into the run dir.
-- `uv run --frozen --extra physics cad gui serve [--port 0] [--no-browser] [--json]` starts the loopback GUI service and writes `out/.gui/service.json`.
+- `uv run --frozen --extra physics cad gui serve [--port 0] [--no-browser] [--json]` starts the loopback GUI service and writes `.cadstudio/gui/service.json` (and `service.log` beside it).
 - `uv run --frozen --extra physics cad physics run <model> --scenario S --acceptance A [--options F] [--params P] [--set KEY=VAL ...] [--out DIR] [--no-live] [--live-fps N]` writes the run dir and, unless `--no-live`, a sibling `<run-name>.live/` that streams poses while the run steps (`--live-fps` sets its sample rate, default 30).
 - `uv run cad doctor [--json]` reports the local toolchain.
 
 `--json` prints one JSON document on stdout and sends progress to stderr; the exit codes do not change.
 
-`<model>` is `<project>/<model>`, or a bare model name when it is unique across projects (a name shared by two projects is an error). The default output dir is `out/<project>/<model>/` and the default params file is the project's `params.toml`.
+`<model>` is `<project>/<model>`, or a bare model name when it is unique across projects (a name shared by two projects is an error). The default output dir is `projects/<project>/out/<model>/` and the default params file is the project's `params.toml`. Physics runs default to `projects/<project>/out/<model>/runs/<scenario_id>-<UTC stamp>/`, and `--out` overrides that.
 
 `--views` defaults to `all` for both `build` and `render`, which is slow. Use `--views standard` while iterating.
 
@@ -42,11 +42,11 @@ The workspace is the nearest ancestor of the current directory that contains a `
 
 1. Edit the project's `params.toml` or `projects/<project>/models/*.py`.
 2. Run `uv run cad build <project>/<model> --render --check --views standard`, e.g. `uv run cad build starter/box --render --check --views standard`.
-3. Read `out/<project>/<model>/report.md`, then the PNGs in `out/<project>/<model>/renders/`.
+3. Read `projects/<project>/out/<model>/report.md`, then the PNGs in `projects/<project>/out/<model>/renders/`.
 4. Pick the render that answers the question. The `standard` set gives `iso.png`, `front.png`, `back.png`, `top.png` (overall shape) and `<part>_print.png` (print pose). Any other view set comes from the project's `extra_views` hook.
 5. Never claim a geometry change works without reading the check report and at least one render.
 
-Renders are not cleared between runs. A `--views standard` build leaves old `section_*` and `detail_*` files in place, so check timestamps (`ls -lt`) before reading one.
+Renders in `projects/<project>/out/<model>/renders/` are not cleared between runs. A `--views standard` build leaves old `section_*` and `detail_*` files in place, so check timestamps (`ls -lt`) before reading one.
 
 Use `--set KEY=VAL` for quick experiments, e.g. `--set box.wall=3`. Use `--out` for a scratch directory. `--part` with `--check` writes a report containing only that part into the outdir, which overwrites the model's `report.md`, so pair `--part` with `--out`.
 
@@ -85,7 +85,7 @@ Projects subclass `ModelPart` for their own per-part options (starter: `StarterP
 
 ## Generic checks
 
-Results go to `out/<project>/<model>/report.md` and `report.json`. Source: `cadkit/checks.py`. Projects add checks through `check_hook`.
+Results go to `projects/<project>/out/<model>/report.md` and `report.json`. Source: `cadkit/checks.py`. Projects add checks through `check_hook`.
 
 - `valid_solid`: FAIL if the shape is invalid or is not exactly one solid.
 - `watertight`: FAIL if the tessellated mesh is not watertight.

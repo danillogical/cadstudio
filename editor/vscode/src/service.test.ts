@@ -54,8 +54,8 @@ describe("parseDiscovery", () => {
     expect(parseDiscovery(text)).toBeNull();
   });
 
-  it("places the file at out/.gui/service.json", () => {
-    expect(discoveryPath("/w")).toBe("/w/out/.gui/service.json");
+  it("places the file at .cadstudio/gui/service.json", () => {
+    expect(discoveryPath("/w")).toBe("/w/.cadstudio/gui/service.json");
   });
 });
 
@@ -106,7 +106,7 @@ describe("findService", () => {
     const deps = makeDeps();
     expect(await findService(deps)).toBeNull();
     expect(deps.health).not.toHaveBeenCalled();
-    expect(deps.readFile).toHaveBeenCalledWith("/real/repo/out/.gui/service.json");
+    expect(deps.readFile).toHaveBeenCalledWith("/real/repo/.cadstudio/gui/service.json");
   });
 
   it("returns null for an unparseable service.json", async () => {

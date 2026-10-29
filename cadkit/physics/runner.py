@@ -50,7 +50,7 @@ from .scenario import (
     scenario_text_matches,
 )
 from .scene import SceneInvalid, export_scene
-from .schema import safe_filename
+from .schema import COUPLING_SOLIMP, safe_filename
 from .state_archive import (
     DEFAULT_MAX_STATE_BYTES,
     REPLAY_TOLERANCES,
@@ -271,7 +271,7 @@ def _resolved_inputs(spec) -> dict:
             "fixed_to_world": body.fixed_to_world, "fixture": body.fixture,
             "source": _source(body.source), "parts": parts, "joint": joint,
         })
-    return {
+    inputs = {
         "assembly": spec.name,
         "gravity_m_s2": list(spec.gravity_m_s2),
         "timestep_s": spec.timestep_s, "integrator": spec.integrator,
@@ -294,6 +294,15 @@ def _resolved_inputs(spec) -> dict:
             for a in spec.actuators
         ],
     }
+    # Added only when present, so an uncoupled run keeps the inputs document it always had.
+    if spec.couplings:
+        inputs["couplings"] = [
+            {"name": c.name, "driver": c.driver, "follower": c.follower, "ratio": c.ratio,
+             "timeconst_s": c.timeconst_s, "dampratio": c.dampratio,
+             "source": _source(c.source)}
+            for c in spec.couplings
+        ]
+    return inputs
 
 
 def _select_document_text(document, explicit: str | None, matcher) -> str:
@@ -306,9 +315,9 @@ def _select_document_text(document, explicit: str | None, matcher) -> str:
 def _claim_run_dir(scenario: ScenarioSpec, outdir: Path | None) -> tuple[Path, str]:
     scenario_hash = scenario.hash()[:8]
     if outdir is None:
-        from ..workspace import workspace_root
+        from ..workspace import fixtures_root
 
-        parent = workspace_root() / "out" / "fixtures" / "m4a" / scenario.scenario_id / "physics"
+        parent = fixtures_root() / "m4a" / scenario.scenario_id / "physics"
         run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{scenario_hash}"
         run_dir = parent / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
@@ -578,6 +587,9 @@ def _verify_compiled(mujoco, model, spec, export) -> tuple[dict, list[dict]]:
             "max_effort": actuator.max_effort,
         }
 
+    if spec.couplings:
+        facts["couplings"] = _verify_couplings(mujoco, model, spec)
+
     compliance: list[dict] = []
     contact_tc = float(spec.contact_timeconst_s)
     effective = effective_timeconst(mujoco, model, contact_tc)
@@ -617,6 +629,51 @@ def _verify_compiled(mujoco, model, spec, export) -> tuple[dict, list[dict]]:
                 "time_s": 0.0,
             })
     return facts, compliance
+
+
+def _verify_couplings(mujoco, model, spec) -> dict:
+    """Each coupling must compile to the joint equality it declares, or the build fails."""
+    facts: dict = {}
+    for coupling in spec.couplings:
+        name = safe_filename(coupling.name)
+        eid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_EQUALITY, name)
+        if eid < 0:
+            raise ScenarioError(f"compiled model has no coupling equality {name!r}")
+        if int(model.eq_type[eid]) != int(mujoco.mjtEq.mjEQ_JOINT):
+            raise ScenarioError(f"compiled coupling {name!r} is not a joint equality")
+        # MuJoCo constrains obj1 as a polynomial of obj2: obj1 is the follower.
+        for label, joint_name, compiled_id in (
+                ("follower", coupling.follower, int(model.eq_obj1id[eid])),
+                ("driver", coupling.driver, int(model.eq_obj2id[eid]))):
+            expected_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if expected_id < 0 or compiled_id != expected_id:
+                raise ScenarioError(
+                    f"compiled coupling {name!r} {label} is not joint {joint_name!r}")
+        polycoef = [float(v) for v in model.eq_data[eid][:5]]
+        if not np.allclose(polycoef, (0.0, coupling.ratio, 0.0, 0.0, 0.0),
+                           rtol=0.0, atol=1e-12):
+            raise ScenarioError(
+                f"compiled coupling {name!r} polycoef {polycoef!r} does not encode ratio "
+                f"{coupling.ratio!r}")
+        solref = [float(v) for v in model.eq_solref[eid]]
+        if not np.allclose(solref, (coupling.timeconst_s, coupling.dampratio),
+                           rtol=0.0, atol=1e-12):
+            raise ScenarioError(
+                f"compiled coupling {name!r} solref {solref!r} != declared "
+                f"{[coupling.timeconst_s, coupling.dampratio]!r}")
+        solimp = [float(v) for v in model.eq_solimp[eid]]
+        if not np.allclose(solimp[:len(COUPLING_SOLIMP)], COUPLING_SOLIMP,
+                           rtol=0.0, atol=1e-12):
+            raise ScenarioError(
+                f"compiled coupling {name!r} solimp {solimp!r} != emitted "
+                f"{list(COUPLING_SOLIMP)!r}")
+        facts[coupling.name] = {
+            "driver": coupling.driver, "follower": coupling.follower,
+            "polycoef": polycoef, "solref": solref, "solimp": solimp,
+            "effective_timeconst_s": effective_timeconst(mujoco, model,
+                                                         coupling.timeconst_s),
+        }
+    return facts
 
 
 SUPPORTED_INTEGRATORS = ("Euler", "RK4")

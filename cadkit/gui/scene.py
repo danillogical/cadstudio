@@ -1,6 +1,6 @@
 """Scene export: ``scene.json`` plus one binary glTF per part, in assembly coordinates.
 
-**Scene** (`out/<project>/<model>/scene/`, written by `cad gui scene <model>`):
+**Scene** (`projects/<project>/out/<model>/scene/`, written by `cad gui scene <model>`):
 - `scene.json` contains:
   - `schemaVersion: 1`, `project`, `model`, `units: "mm"`;
   - provenance: git commit, a dirty flag, a params-file sha256, `--set` overrides, and the build time;
@@ -11,7 +11,7 @@
 Fields: ``schemaVersion``, ``project``, ``model``, ``units``, ``provenance``
 (``commit``, ``dirty``, ``paramsPath``, ``paramsSha256``, ``overrides``, ``builtAt``) and
 ``parts`` (``id``, ``name``, ``mesh``, ``bbox``, ``volume``, ``color``, optional
-``printPose``). The default output dir is ``out/<project>/<model>/scene/``.
+``printPose``). The default output dir is ``projects/<project>/out/<model>/scene/`` in the workspace.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ import trimesh
 from ..mesh import shape_to_mesh
 from ..params import override
 from ..project import load_model, resolve
-from ..workspace import workspace_root
+from ..workspace import model_out, workspace_root
 
 SCHEMA_VERSION = 1
 # Match build123d Mesher.add_shape defaults used by cadkit/export.py.
@@ -119,7 +119,7 @@ def write_scene(spec, *, params_path=None, sets=None, out=None) -> dict:
         raise SceneError(str(exc)) from None
 
     root = workspace_root()
-    outdir = Path(out) if out else root / "out" / project.name / model / "scene"
+    outdir = Path(out) if out else model_out(project.name, model, root) / "scene"
 
     entries: list[dict] = []
     payloads: list[tuple[str, bytes]] = []

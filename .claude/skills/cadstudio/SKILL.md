@@ -5,7 +5,7 @@ description: Build, check, render and view CAD models and physics runs in cadstu
 
 # cadstudio
 
-Everything goes through the `cad` CLI (`uv run cad ...`), run from the workspace root: the directory that holds `projects/`. Outputs land in `<workspace>/out/`. For opening report, render or video files instead, use the `connect-ide` skill. `AGENTS.md` has the full command list and check definitions.
+Everything goes through the `cad` CLI (`uv run cad ...`), run from the workspace root: the directory that holds `projects/`. Model outputs land in `<workspace>/projects/<project>/out/<model>/`, and physics runs in `projects/<project>/out/<model>/runs/`. For opening report, render or video files instead, use the `connect-ide` skill. `AGENTS.md` has the full command list and check definitions.
 
 ## Build, check, render
 
@@ -18,8 +18,8 @@ uv run --frozen cad build starter/box --check --set box.wall=3 --out /tmp/box-tr
 
 1. Edit `projects/<project>/params.toml` or `projects/<project>/models/*.py`.
 2. Build with `--render --check --views standard` (the default `--views all` is slow).
-3. Read `out/<project>/<model>/report.md` (FAIL/WARN rows first), then the PNGs in `out/<project>/<model>/renders/`: `iso.png`, `front.png`, `back.png`, `top.png` and `<part>_print.png`.
-4. Renders are not cleared between runs; check `ls -lt` timestamps before trusting a `section_*` or `detail_*` file.
+3. Read `projects/<project>/out/<model>/report.md` (FAIL/WARN rows first), then the PNGs in `projects/<project>/out/<model>/renders/`: `iso.png`, `front.png`, `back.png`, `top.png` and `<part>_print.png`.
+4. Renders in `projects/<project>/out/<model>/renders/` are not cleared between runs; check `ls -lt` timestamps before trusting a `section_*` or `detail_*` file.
 5. Never say a geometry change works without having read the report and at least one render.
 
 `--part NAME --check` overwrites `report.md` with a one-part report, so pair `--part` with `--out`.
@@ -28,13 +28,14 @@ uv run --frozen cad build starter/box --check --set box.wall=3 --out /tmp/box-tr
 
 ```
 uv run --frozen --extra physics cad gui open starter/hinge --json
-uv run --frozen --extra physics cad gui open --run out/<run-dir> --json
+uv run --frozen --extra physics cad gui open --run projects/starter/out/hinge/runs/<run> --json
 ```
 
 - `cad gui open [<model> | --run RUN_DIR] [--editor auto|vscode|browser] [--no-open] [--json]`.
+- `--run` takes a run dir relative to the cwd or the workspace, inside `projects/*/out/` or `.cadstudio/fixtures/`.
 - With `--editor auto` (the default), VS Code is used when the command runs in its terminal (`TERM_PROGRAM=vscode`) and `code` is on PATH. Otherwise, or with no acknowledgement within 10 s, the browser opens instead.
 - `--no-open` opens nothing and only prints the URL.
-- If no GUI service is running, the command starts one and leaves it running. Its log is `out/.gui/service.log`.
+- If no GUI service is running, the command starts one and leaves it running. Its log is `.cadstudio/gui/service.log`.
 
 ### Reading the result
 

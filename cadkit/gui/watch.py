@@ -8,30 +8,38 @@ anything already on disk at start is never announced; ``GuiService.close()`` sto
 (or renews) a follow with a lease that expires ``lease`` seconds (default 60) after the last
 POST; ``DELETE /v1/follow`` drops one model (``{"model"}``) or all of them (no body or ``{}``).
 While a project has a live follow, every ``*.py`` and ``*.toml`` under ``projects/<project>/``
-is tracked (``__pycache__``, dot dirs and symlinked dirs are skipped). An add, remove, or
+is tracked (``__pycache__``, dot dirs, symlinked dirs and the project's own ``out/`` are
+skipped, so outputs such as a run's ``assembly_options.lock.toml`` never trigger a rebuild). An
+add, remove, or
 ``mtime``/size change starts a debounce; after ``debounce`` seconds (default 1.5) with no further
 change, each followed model of that project gets ONE build job through the normal job queue.
 A build is not queued when a build job for that model is already ``queued``; when one is
 ``running``, at most one follow-up is queued. So a burst of edits yields exactly one build,
 plus one follow-up if edits land while it runs.
 
-**External scenes.** ``out/<project>/<model>/scene/scene.json`` (``<project>`` a known project,
-checked only when announcing so the baseline scan never imports the projects) is announced as
+**Output roots.** Everything below is found by walking the workspace's output roots
+(``cadkit.workspace.output_roots``): each ``projects/<project>/out/`` and
+``.cadstudio/fixtures/``. Every id is a POSIX path relative to the workspace.
+
+**External scenes.** ``projects/<project>/out/<model>/scene/scene.json`` (``<project>`` a known
+project, checked only when announcing so the baseline scan never imports the projects; a
+``_``-prefixed ``<model>`` dir is not a model and is ignored) is announced as
 ``artifact {kind: "scene", model}`` whenever its ``mtime`` differs from the last one announced
 (a newly appearing scene counts; a deleted one is forgotten silently).
 ``write_scene`` replaces ``scene.json`` atomically, so a changed ``mtime`` is always a complete
 file. While a service build job for the model runs, the scene is not considered; the job
 records the ``mtime`` it produced before publishing its own event, so it is never announced twice.
 
-**External runs.** A directory under ``out/`` that newly qualifies as a run (``is_run_dir``,
-the rule ``GET /v1/runs`` uses), or whose ``summary.json`` ``mtime`` changes, is announced as
-``artifact {kind: "run", runId}`` with ``runId`` relative to ``out/`` as in ``GET /v1/runs``.
+**External runs.** A directory under an output root that newly qualifies as a run
+(``is_run_dir``, the rule ``GET /v1/runs`` uses), or whose ``summary.json`` ``mtime`` changes, is
+announced as ``artifact {kind: "run", runId}`` with the workspace-relative ``runId`` that
+``GET /v1/runs`` lists (default runs sit at ``projects/<p>/out/<m>/runs/...``, possibly nested).
 A service physics job's own run dir is skipped while the job runs, and recorded when the job
 announces it.
 
-**Live runs.** A non-symlink directory ``<run-name>.live/`` under ``out/`` whose ``live.json``
-or ``poses.bin`` changes (``mtime``/size) is announced as ``artifact {kind: "live", liveId,
-frames, done}``. ``liveId`` is the ``.live`` dir's path relative to ``out/`` without the
+**Live runs.** A non-symlink directory ``<run-name>.live/`` under an output root whose
+``live.json`` or ``poses.bin`` changes (``mtime``/size) is announced as ``artifact {kind: "live",
+liveId, frames, done}``. ``liveId`` is the ``.live`` dir's workspace-relative path without the
 ``.live`` suffix (the ``runId`` the finished run will have; its files are
 ``<liveId>.live/...``, as trajectories are ``<runId>.gui/...``). ``frames`` is ``live.json``'s
 integer ``frames`` (else null) and ``done`` is true only when ``live.json`` has ``done: true``.
@@ -39,9 +47,10 @@ A ``live.json`` that is missing, unreadable or not a JSON object is skipped for 
 retried on the next. Events are throttled to one per ``live_interval`` seconds (default 0.5)
 per live dir; a change inside the window is published once the window has passed.
 
-**Scan pruning.** The ``out/`` walk uses ``os.scandir`` and never follows symlinks. It skips dot
-dirs and ``*.gui`` dirs (as ``GET /v1/runs`` does), and also ``renders/`` dirs, the ``parts/``
-dir inside any ``scene/`` dir, and the inside of ``*.live`` dirs.
+**Scan pruning.** The output walk uses ``os.scandir`` and never follows symlinks (a symlinked
+output root is not walked at all). It skips dot dirs and ``*.gui`` dirs (as ``GET /v1/runs``
+does), and also ``renders/`` dirs, the ``parts/`` dir inside any ``scene/`` dir, and the inside of
+``*.live`` dirs.
 
 **Locking.** All shared watcher state (follows, records, in-flight job keys) is guarded by
 ``Watcher._lock``; file I/O for a scan happens outside it, and changed files are re-stat'ed
@@ -59,6 +68,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..workspace import OUT, STATE, model_out, output_roots
+
 DEFAULT_INTERVAL_S = 1.0
 DEFAULT_DEBOUNCE_S = 1.5
 DEFAULT_LEASE_S = 60.0
@@ -72,7 +83,7 @@ def project_dir(project) -> Path:
     return Path(project.models.__file__).resolve().parent.parent
 
 
-# -- the out/ walk and the run rule, shared with GET /v1/runs --------------------------
+# -- the output walk and the run rule, shared with GET /v1/runs -----------------------
 
 
 def walk_out(root: Path):
@@ -108,8 +119,19 @@ def walk_out(root: Path):
             stack.append((path / name, rel + (name,)))
 
 
+def walk_outputs(ws: Path):
+    """``walk_out`` over every output root of workspace ``ws``.
+
+    Yields ``(path, ws_rel, root_rel, files, subdirs)``: ``ws_rel`` is the dir's parts relative
+    to the workspace (an id prefix), ``root_rel`` relative to its output root (empty for the root).
+    """
+    for root, root_parts in output_roots(ws):
+        for path, rel, files, subdirs in walk_out(root):
+            yield path, root_parts + rel, rel, files, subdirs
+
+
 def is_run_dir(rel: tuple[str, ...], files: dict) -> bool:
-    """A physics run dir: below ``out/`` with real ``summary.json`` and ``states.npz`` files."""
+    """A physics run dir: below an output root with real ``summary.json`` and ``states.npz``."""
     if not rel:
         return False
     for name in ("summary.json", "states.npz"):
@@ -168,7 +190,7 @@ class _LiveState:
 
 
 class Watcher:
-    """Polls project sources and ``out/`` for ``GuiService``; see the module docstring."""
+    """Polls project sources and the output roots for ``GuiService``; see the module docstring."""
 
     def __init__(self, service, *, interval: float = DEFAULT_INTERVAL_S,
                  debounce: float = DEFAULT_DEBOUNCE_S, lease: float = DEFAULT_LEASE_S,
@@ -298,18 +320,18 @@ class Watcher:
 
     def note_run(self, run_id: str) -> None:
         """Record the run a service job is about to announce itself."""
-        sig = _stat_sig(self.service.out_root / run_id / "summary.json")
+        sig = _stat_sig(self.service.repo_root / run_id / "summary.json")
         with self._lock:
             self._runs[run_id] = sig
 
     def _scene_path(self, key: str) -> Path:
         project, _, model = key.partition("/")
-        return self.service.out_root / project / model / "scene" / "scene.json"
+        return model_out(project, model, self.service.repo_root) / "scene" / "scene.json"
 
     # -- scanning ------------------------------------------------------------------------
 
     def scan_once(self) -> None:
-        """One poll: expire follows, check sources, check ``out/``, then submit and publish."""
+        """One poll: expire follows, check sources, check outputs, then submit and publish."""
         with self._tick_lock:
             started = time.perf_counter()
             builds = self._check_sources()
@@ -349,27 +371,27 @@ class Watcher:
         return builds
 
     def _check_out(self) -> list[dict]:
-        root = self.service.out_root
         scenes: dict[str, tuple[int, int]] = {}
         runs: dict[str, tuple[int, int] | None] = {}
         lives: dict[str, tuple] = {}
-        if root.is_dir():
-            for path, rel, files, subdirs in walk_out(root):
-                if "renders" in subdirs:
-                    subdirs.remove("renders")
-                if rel and rel[-1] == "scene" and "parts" in subdirs:
-                    subdirs.remove("parts")
-                for name in [name for name in subdirs if name.endswith(".live")]:
-                    subdirs.remove(name)
-                    live_rel = "/".join(rel + (name,))
-                    lives[live_rel] = (_stat_sig(path / name / "live.json"),
-                                       _stat_sig(path / name / "poses.bin"))
-                if len(rel) == 3 and rel[2] == "scene" and "scene.json" in files:
-                    sig = _entry_sig(files["scene.json"])
-                    if sig is not None:
-                        scenes[f"{rel[0]}/{rel[1]}"] = sig
-                if is_run_dir(rel, files):
-                    runs["/".join(rel)] = _entry_sig(files["summary.json"])
+        for path, ws_rel, rel, files, subdirs in walk_outputs(self.service.repo_root):
+            if "renders" in subdirs:
+                subdirs.remove("renders")
+            if rel and rel[-1] == "scene" and "parts" in subdirs:
+                subdirs.remove("parts")
+            for name in [name for name in subdirs if name.endswith(".live")]:
+                subdirs.remove(name)
+                live_rel = "/".join(ws_rel + (name,))
+                lives[live_rel] = (_stat_sig(path / name / "live.json"),
+                                   _stat_sig(path / name / "poses.bin"))
+            # A scene is projects/<p>/out/<m>/scene/scene.json; fixtures have no scenes.
+            if (ws_rel[0] != STATE and len(rel) == 2 and rel[1] == "scene"
+                    and not rel[0].startswith("_") and "scene.json" in files):
+                sig = _entry_sig(files["scene.json"])
+                if sig is not None:
+                    scenes[f"{ws_rel[1]}/{rel[0]}"] = sig
+            if is_run_dir(rel, files):
+                runs["/".join(ws_rel)] = _entry_sig(files["summary.json"])
         events: list[dict] = []
         now = self._monotonic()
         with self._lock:
@@ -413,7 +435,7 @@ class Watcher:
             if baseline:
                 self._runs[run_id] = sig
                 continue
-            fresh = _stat_sig(self.service.out_root / run_id / "summary.json")
+            fresh = _stat_sig(self.service.repo_root / run_id / "summary.json")
             if run_id in self._runs and self._runs[run_id] == fresh:
                 continue
             self._runs[run_id] = fresh
@@ -431,7 +453,7 @@ class Watcher:
                 continue
             if now - state.last_publish < self.live_interval:
                 continue  # throttled; the change is still pending on the next tick
-            doc = _read_live(self.service.out_root / live_rel / "live.json")
+            doc = _read_live(self.service.repo_root / live_rel / "live.json")
             if doc is None:
                 continue  # missing or partial live.json: retry next tick
             state.sig = sig
@@ -444,8 +466,12 @@ class Watcher:
 
 
 def _scan_sources(root: Path) -> dict[str, tuple[int, int]]:
-    """``{relative path: (mtime_ns, size)}`` of the ``*.py``/``*.toml`` files under ``root``."""
+    """``{relative path: (mtime_ns, size)}`` of the ``*.py``/``*.toml`` files under ``root``.
+
+    ``root`` is a project dir; its ``out/`` holds outputs, not sources, and is never scanned.
+    """
     out: dict[str, tuple[int, int]] = {}
+    skip = root / OUT
     stack = [root]
     while stack:
         path = stack.pop()
@@ -457,8 +483,9 @@ def _scan_sources(root: Path) -> dict[str, tuple[int, int]]:
                         continue
                     try:
                         if entry.is_dir(follow_symlinks=False):
-                            if name != "__pycache__":
-                                stack.append(Path(entry.path))
+                            child = Path(entry.path)
+                            if name != "__pycache__" and child != skip:
+                                stack.append(child)
                             continue
                         if not name.endswith(_SOURCE_SUFFIXES):
                             continue

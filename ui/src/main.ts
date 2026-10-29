@@ -7,7 +7,7 @@ import { targetFromSearch } from "./app/navigate";
 import { PlaybackController } from "./playback/controller";
 import { BrowserTransport } from "./transport/browser";
 import type { NavigateTarget } from "./transport/messages";
-import { TransportError, type CadStudioTransport, type Job, type RunEntry } from "./transport/types";
+import { TransportError, type CadStudioTransport, type Job, type ModelEntry, type RunEntry } from "./transport/types";
 import { hasVsCodeApi, VsCodeTransport } from "./transport/vscode";
 import { Viewport, type LayerName } from "./viewport/viewport";
 
@@ -28,6 +28,7 @@ function describe(error: unknown): string {
 async function main(): Promise<void> {
   const banner = element("banner");
   const runBanner = element("run-banner");
+  const projectPicker = element<HTMLSelectElement>("project-picker");
   const picker = element<HTMLSelectElement>("model-picker");
   const runPicker = element<HTMLSelectElement>("run-picker");
   const stage = element("stage");
@@ -106,19 +107,22 @@ async function main(): Promise<void> {
   const runPlaceholder = document.createElement("option");
   runPlaceholder.value = "";
   runPlaceholder.textContent = "Select a run…";
+  // Only the selected model's runs are listed; with no model selected there are none.
   const refreshRuns = async (select?: string): Promise<RunEntry[]> => {
     try {
       const { runs } = await transport.listRuns();
       const current = select ?? runPicker.value;
+      const model = picker.value;
+      const shown = model ? runs.filter((run) => run.model === model) : [];
       runPicker.replaceChildren(runPlaceholder);
-      for (const run of runs) {
+      for (const run of shown) {
         const option = document.createElement("option");
         option.value = run.runId;
         option.textContent = run.status ? `${run.runId} (${run.status})` : run.runId;
         runPicker.appendChild(option);
       }
-      if (runs.some((run) => run.runId === current)) runPicker.value = current;
-      runPicker.disabled = runs.length === 0;
+      if (shown.some((run) => run.runId === current)) runPicker.value = current;
+      runPicker.disabled = shown.length === 0;
       return runs;
     } catch (error) {
       renderBanner(runBanner, { kind: "error", text: `Could not list runs: ${describe(error)}` });
@@ -163,6 +167,11 @@ async function main(): Promise<void> {
   element("fit").addEventListener("click", () => viewport.fit());
   element("runs-refresh").addEventListener("click", () => void refreshRuns());
 
+  const projectPlaceholder = document.createElement("option");
+  projectPlaceholder.value = "";
+  projectPlaceholder.textContent = "Select a project…";
+  projectPicker.appendChild(projectPlaceholder);
+  projectPicker.disabled = true;
   const placeholder = document.createElement("option");
   placeholder.value = "";
   placeholder.textContent = "Select a model…";
@@ -172,24 +181,45 @@ async function main(): Promise<void> {
   runPicker.disabled = true;
 
   let modelsLoaded = false;
-  const hasModel = (model: string) => [...picker.options].some((option) => option.value === model);
-  // Fill the picker from the service's list, keeping the current selection when it is listed.
-  const fillPicker = (models: string[]) => {
+  // Bare model names per project, from the last `listModels`.
+  let projectModels = new Map<string, string[]>();
+  const hasModel = (spec: string) => {
+    const [project, ...rest] = spec.split("/");
+    return (projectModels.get(project) ?? []).includes(rest.join("/"));
+  };
+  // Fill the Model select with one project's models; values are full specs, text the bare name.
+  const fillModels = (project: string) => {
     const current = picker.value;
+    const models = projectModels.get(project) ?? [];
     picker.replaceChildren(placeholder);
     for (const model of models) {
       const option = document.createElement("option");
-      option.value = model;
+      option.value = `${project}/${model}`;
       option.textContent = model;
       picker.appendChild(option);
     }
     picker.disabled = models.length === 0;
-    picker.value = models.includes(current) ? current : "";
+    picker.value = models.some((model) => `${project}/${model}` === current) ? current : "";
   };
-  // Re-read the model list, since a model created after startup is not in the picker yet.
+  // Fill both selects from the service's list, keeping the current selections when still listed.
+  const fillPickers = (projects: ModelEntry[]) => {
+    const current = projectPicker.value;
+    projectModels = new Map(projects.map((entry) => [entry.name, entry.models]));
+    projectPicker.replaceChildren(projectPlaceholder);
+    for (const entry of projects) {
+      const option = document.createElement("option");
+      option.value = entry.name;
+      option.textContent = entry.name;
+      projectPicker.appendChild(option);
+    }
+    projectPicker.disabled = projects.length === 0;
+    projectPicker.value = projectModels.has(current) ? current : "";
+    fillModels(projectPicker.value);
+  };
+  // Re-read the model list, since a model created after startup is not in the pickers yet.
   const refreshModels = async () => {
     try {
-      fillPicker((await transport.listModels()).models);
+      fillPickers((await transport.listModels()).projects);
     } catch {
       // Keep the list we have; a navigate that still misses reports the unknown model.
     }
@@ -201,9 +231,24 @@ async function main(): Promise<void> {
     showLayer("scene");
     void controller.loadModel(model);
     void jobs.setModel(model);
+    void refreshRuns();
   };
+  // Show a listed model in both selects and load it.
+  const switchToModel = (model: string) => {
+    const project = model.split("/")[0];
+    projectPicker.value = project;
+    fillModels(project);
+    selectModel(model);
+  };
+  projectPicker.addEventListener("change", () => {
+    fillModels(projectPicker.value);
+    const models = projectModels.get(projectPicker.value) ?? [];
+    if (models.length === 1) selectModel(`${projectPicker.value}/${models[0]}`);
+    else void refreshRuns();
+  });
   picker.addEventListener("change", () => {
     if (picker.value) selectModel(picker.value);
+    else void refreshRuns();
   });
   runPicker.addEventListener("change", () => {
     if (runPicker.value) void openRun(runPicker.value);
@@ -211,14 +256,27 @@ async function main(): Promise<void> {
 
   // Live ids already opened or offered, so a late event of an old run never reopens it.
   const seenLive = new Set<string>();
-  const openLive = (liveId: string) => {
+  // The model of a live run: the service's listing when it carries one, else the workspace path.
+  const liveModel = async (liveId: string): Promise<string | null> => {
+    const match = /^projects\/([^/]+)\/out\/([^/]+)\/runs\//.exec(liveId);
+    if (match) return `${match[1]}/${match[2]}`;
+    try {
+      const { lives } = await transport.listLive();
+      return lives.find((live) => live.liveId === liveId)?.model ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const openLiveFollowing = async (liveId: string) => {
     seenLive.add(liveId);
+    const model = await liveModel(liveId);
+    if (model && model !== picker.value && hasModel(model)) switchToModel(model);
     void playback.openLive(liveId);
   };
   const onLiveEvent = (event: { liveId: string; frames: number; done: boolean }) => {
     if (!follow.enabled) return;
     if (playback.liveId === event.liveId) playback.handleLive(event);
-    else if (!event.done && !seenLive.has(event.liveId)) openLive(event.liveId);
+    else if (!event.done && !seenLive.has(event.liveId)) void openLiveFollowing(event.liveId);
   };
   // A finished run in follow mode plays by itself; a run being streamed is swapped in place.
   const onRunEvent = (runId: string) => {
@@ -226,9 +284,16 @@ async function main(): Promise<void> {
       void refreshRuns();
       return;
     }
-    void refreshRuns().then((runs) => {
+    void refreshRuns().then(async (runs) => {
       if (playback.runId === runId || playback.liveId === runId) return;
-      if (runs.some((run) => run.runId === runId && run.status)) void openRun(runId, true);
+      const run = runs.find((entry) => entry.runId === runId);
+      if (!run?.status) return;
+      // A run of another model brings its model with it.
+      if (run.model && run.model !== picker.value && hasModel(run.model)) {
+        switchToModel(run.model);
+        await refreshRuns(runId);
+      }
+      void openRun(runId, true);
     });
   };
   const unsubscribe = transport.subscribe((event) => {
@@ -250,6 +315,18 @@ async function main(): Promise<void> {
     if (event.type === "artifact" && event.kind === "scene" && modelsLoaded && !hasModel(event.model)) {
       void refreshModels();
     }
+    // Following, a scene built for another listed model switches both selects to it.
+    if (
+      event.type === "artifact" &&
+      event.kind === "scene" &&
+      follow.enabled &&
+      modelsLoaded &&
+      event.model !== picker.value &&
+      hasModel(event.model)
+    ) {
+      switchToModel(event.model);
+      return;
+    }
     // The job panel reports its own job's finish once; everything else goes to the scene.
     if (jobs.owns(event)) jobs.handleEvent(event);
     else controller.handleEvent(event);
@@ -269,7 +346,7 @@ async function main(): Promise<void> {
       const { lives } = await transport.listLive();
       const now = Date.now() / 1000;
       const recent = lives.find((live) => !live.done && live.mtime !== null && now - live.mtime < 30);
-      if (recent && playback.liveId === null && playback.runId === null) openLive(recent.liveId);
+      if (recent && playback.liveId === null && playback.runId === null) void openLiveFollowing(recent.liveId);
     } catch {
       // A service without live runs just has nothing to join.
     }
@@ -285,11 +362,20 @@ async function main(): Promise<void> {
     if (!modelsLoaded) return; // The service error is already on the banner.
     if ("model" in target) {
       if (!hasModel(target.model)) await refreshModels();
-      if (hasModel(target.model)) selectModel(target.model);
+      if (hasModel(target.model)) switchToModel(target.model);
       else renderBanner(banner, { kind: "error", text: `Unknown model ${target.model}.` });
       return;
     }
-    await refreshRuns(target.run);
+    // A run of another model brings its model with it, as in follow mode; fixtures (no model) just play.
+    const runs = await refreshRuns(target.run);
+    const path = /^projects\/([^/]+)\/out\/([^/]+)\/runs\//.exec(target.run);
+    const model = runs.find((entry) => entry.runId === target.run)?.model ?? (path ? `${path[1]}/${path[2]}` : null);
+    if (model && model !== picker.value && hasModel(model)) {
+      switchToModel(model);
+      await refreshRuns(target.run);
+    } else if (model && model === picker.value) {
+      runPicker.value = target.run;
+    }
     await openRun(target.run, true);
   };
   if (vscodeTransport) {
@@ -306,14 +392,21 @@ async function main(): Promise<void> {
       });
     }
     const models = await transport.listModels();
-    fillPicker(models.models);
+    fillPickers(models.projects);
     modelsLoaded = true;
+    if (models.projects.length === 1) {
+      projectPicker.value = models.projects[0].name;
+      fillModels(projectPicker.value);
+    }
     void refreshRuns();
-    if (models.models.length === 1 && !urlTarget) {
-      picker.value = models.models[0];
-      follow.setModel(models.models[0]);
-      void jobs.setModel(models.models[0]);
-      await controller.loadModel(models.models[0]);
+    const only = projectPicker.value ? (projectModels.get(projectPicker.value) ?? []) : [];
+    if (only.length === 1 && !urlTarget) {
+      const spec = `${projectPicker.value}/${only[0]}`;
+      picker.value = spec;
+      follow.setModel(spec);
+      void jobs.setModel(spec);
+      void refreshRuns();
+      await controller.loadModel(spec);
     }
   } catch (error) {
     renderBanner(banner, { kind: "error", text: `Could not reach the GUI service: ${describe(error)}` });

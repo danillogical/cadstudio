@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .workspace import ENGINE_ROOT, WorkspaceError, workspace_root
+from .workspace import ENGINE_ROOT, WorkspaceError, state_root, workspace_root
 
 MIN_PYTHON = (3, 11)
 MIN_NODE_MAJOR = 22
@@ -82,7 +82,7 @@ def _python() -> dict:
 def _output_dir(workspace: Path | None, error: str | None = None) -> dict:
     if workspace is None:
         return {"path": None, "writable": False, "required": True, "ok": False, "error": error}
-    path = workspace / "out"
+    path = state_root(workspace)
     writable = False
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -101,8 +101,9 @@ def _presence(path: Path, kind: str, *, required: bool = False) -> dict:
 def collect(workspace: Path | None = None, engine_root: Path = ENGINE_ROOT) -> dict:
     """Build the doctor report; ``ok`` covers only the required checks.
 
-    ``output_dir`` is the workspace's ``out/`` (default: the current workspace); the UI and
-    extension builds belong to the engine checkout.
+    ``output_dir`` is the workspace's hidden state dir ``.cadstudio/`` (default: the current
+    workspace), which must be writable; model outputs go to each project's own ``out/``. The UI
+    and extension builds belong to the engine checkout.
     """
     error = None
     if workspace is None:

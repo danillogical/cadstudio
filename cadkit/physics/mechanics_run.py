@@ -989,9 +989,9 @@ def _write_trace(path: Path, trial: Trial) -> None:
 
 
 def default_mechanics_outdir(run_id: str) -> Path:
-    from ..workspace import workspace_root
+    from ..workspace import fixtures_root
 
-    return workspace_root() / "out" / "fixtures" / "m3_mechanics" / "physics" / run_id
+    return fixtures_root() / "m3_mechanics" / "physics" / run_id
 
 
 def _run_set(outdir: Path, timestep_s: float) -> dict[str, Trial]:

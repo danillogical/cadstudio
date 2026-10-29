@@ -26,7 +26,8 @@ import numpy as np
 
 from . import require_mujoco
 from .inertia import body_inertial
-from .schema import AssemblySpec, BodySpec, ColliderSpec, Frame, safe_filename
+from .schema import (COUPLING_SOLIMP, AssemblySpec, BodySpec, ColliderSpec, Frame,
+                     JointCouplingSpec, safe_filename)
 from .units import mm_to_m
 
 
@@ -212,7 +213,8 @@ def export_scene(spec: AssemblySpec, outdir: Path, *, compile_model: bool = True
     xml_bodies = [render(body_id, 2) for body_id in roots]
 
     actuator_xml = [_actuator_xml(a) for a in spec.actuators]
-    xml = _assemble_xml(spec, mesh_decls, xml_bodies, actuator_xml)
+    equality_xml = [_coupling_xml(c) for c in spec.couplings]
+    xml = _assemble_xml(spec, mesh_decls, xml_bodies, actuator_xml, equality_xml)
     scene_path = outdir / "scene.xml"
     try:
         scene_path.write_text(xml, encoding="utf-8")
@@ -265,6 +267,8 @@ def export_scene(spec: AssemblySpec, outdir: Path, *, compile_model: bool = True
     }
     # Canonical identity payload: replay recomputes the scene hash from the saved XML and
     # asset hashes with this exact payload, without touching CAD.
+    if spec.couplings:
+        report["couplings"] = [_coupling_record(c) for c in spec.couplings]
     report["scene_identity"] = scene_identity(xml, asset_hashes, spec)
     report_path = outdir / "report.json"
     try:
@@ -505,8 +509,28 @@ def _actuator_xml(actuator) -> str:
     )
 
 
+def _coupling_xml(coupling: JointCouplingSpec) -> str:
+    """One joint equality: ``q_joint1 = polycoef[0] + polycoef[1] * q_joint2 + ...``.
+
+    MuJoCo constrains ``joint1`` as a polynomial of ``joint2``, so the follower is ``joint1``
+    and the driver ``joint2``. Only the linear term is set; both joints have a zero reference
+    position, so the relation holds from the joints' zero with no offset. ``solref`` is the
+    coupling's declared absolute time constant and ``solimp`` is fixed, so the compliance is
+    stated in the XML instead of inherited from MuJoCo's softer equality default.
+    """
+    return (
+        f'    <joint name="{safe_filename(coupling.name)}" '
+        f'joint1="{safe_filename(coupling.follower)}" '
+        f'joint2="{safe_filename(coupling.driver)}" '
+        f'polycoef="0 {_f(coupling.ratio)} 0 0 0" '
+        f'solref="{_f(coupling.timeconst_s)} {_f(coupling.dampratio)}" '
+        f'solimp="{_vec(COUPLING_SOLIMP)}"/>'
+    )
+
+
 def _assemble_xml(spec: AssemblySpec, meshes: list[str], bodies: list[str],
-                  actuators: list[str] | None = None) -> str:
+                  actuators: list[str] | None = None,
+                  equalities: list[str] | None = None) -> str:
     g = _vec(spec.gravity_m_s2)
     mesh_xml = "\n".join(meshes)
     body_xml = "\n".join(bodies)
@@ -542,7 +566,7 @@ def _assemble_xml(spec: AssemblySpec, meshes: list[str], bodies: list[str],
     <body name="world_frame"/>
 {body_xml}
   </worldbody>
-{_actuator_block(actuators or [])}</mujoco>
+{_actuator_block(actuators or [])}{_equality_block(equalities or [])}</mujoco>
 """
 
 
@@ -552,13 +576,19 @@ def _actuator_block(actuators: list[str]) -> str:
     return "  <actuator>\n" + "\n".join(actuators) + "\n  </actuator>\n"
 
 
+def _equality_block(equalities: list[str]) -> str:
+    if not equalities:
+        return ""
+    return "  <equality>\n" + "\n".join(equalities) + "\n  </equality>\n"
+
+
 def scene_identity(xml: str, asset_hashes: dict[str, str], spec: AssemblySpec) -> dict:
     """The canonical semantic scene identity payload.
 
     It is written into ``report.json`` so replay can recompute the scene hash from the saved
     XML and asset hashes without regenerating CAD.
     """
-    return {
+    identity = {
         "xml": xml,
         "assets": asset_hashes,
         "assembly": spec.name,
@@ -568,6 +598,16 @@ def scene_identity(xml: str, asset_hashes: dict[str, str], spec: AssemblySpec) -
             for b in spec.bodies
         ],
     }
+    # Added only when present, so an uncoupled scene keeps the hash it always had.
+    if spec.couplings:
+        identity["couplings"] = [_coupling_record(c) for c in spec.couplings]
+    return identity
+
+
+def _coupling_record(coupling: JointCouplingSpec) -> dict:
+    return {"name": coupling.name, "driver": coupling.driver, "follower": coupling.follower,
+            "ratio": coupling.ratio, "timeconst_s": coupling.timeconst_s,
+            "dampratio": coupling.dampratio}
 
 
 def compute_scene_hash(identity: dict) -> str:

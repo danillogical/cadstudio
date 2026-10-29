@@ -118,7 +118,7 @@ export function parseModelSpec(value: unknown): { project: string; model: string
 }
 
 /**
- * A relative `out/` (or repo) path: the server's artifact and run-id rule (no leading `/`, no
+ * A relative workspace path (e.g. `projects/starter/out/box/runs/r1`): the server's artifact and run-id rule (no leading `/`, no
  * backslash, no empty, `.` or `..` segment), plus no control characters.
  */
 export function isRelativePath(value: unknown): value is string {
@@ -190,7 +190,7 @@ function followArg(value: unknown): { project: string; model: string } {
   return modelArg(value.model);
 }
 
-/** `{liveId}` for getLive: a relative path under `out/`, the same rule as a run id. */
+/** `{liveId}` for getLive: a relative workspace path, the same rule as a run id. */
 function liveIdArg(value: unknown): string {
   if (!isRecord(value) || !hasOnlyKeys(value, ["liveId"])) throw new Invalid("request must be {liveId}");
   return pathArg(value.liveId, "liveId");

@@ -30,10 +30,10 @@ Use the `code` commands below for files: reports, verdicts, renders, videos and 
 Run from the repo root and use repo-relative paths.
 
 ```
-code -r out/starter/box/report.md                          # open a file in this window
+code -r projects/starter/out/box/report.md                 # open a file in this window
 code -g projects/starter/models/box.py:20                  # jump to a line
-code -r out/starter/box/renders/iso.png                    # image preview
-code -r out/<run>/preview.mp4                              # built-in video player
+code -r projects/starter/out/box/renders/iso.png           # image preview
+code -r projects/starter/out/hinge/runs/<run>.mp4          # built-in video player
 code -r --diff a.json b.json                               # side-by-side diff
 ```
 
@@ -44,14 +44,14 @@ and let the user say if it did not appear.
 
 | What | Path |
 |---|---|
-| CAD check report | `out/<project>/<model>/report.md` |
-| CAD renders | `out/<project>/<model>/renders/{iso,front,top,back}.png`, `<part>_print.png` |
+| CAD check report | `projects/<project>/out/<model>/report.md` |
+| CAD renders | `projects/<project>/out/<model>/renders/{iso,front,top,back}.png`, `<part>_print.png` |
 | Physics run summary / report | `<run>/summary.json`, `<run>/report.md` |
-| Physics videos | next to the run, e.g. `out/<run>/*.mp4` |
+| Physics videos | next to the run, e.g. `projects/<project>/out/<model>/runs/<run>.mp4` |
 | Project docs and pass/fail commands | `projects/<project>/README.md`, if the project has one |
 
 A run directory is anything containing `summary.json` and `states.npz`. Find recent ones with
-`ls -td out/*/run* out/*/runs/* 2>/dev/null | head`.
+`ls -td projects/*/out/*/runs/* .cadstudio/fixtures/* 2>/dev/null | head`.
 
 ## Showing a physics run
 
